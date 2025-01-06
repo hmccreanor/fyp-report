@@ -1,11 +1,11 @@
 \documentclass[12pt,twoside]{report}
 
 % some definitions for the title page
-\newcommand{\reporttitle}{asdfasdf}
-\newcommand{\reportauthor}{Your name}
-\newcommand{\supervisor}{Name of supervisor}
-\newcommand{\reporttype}{Type of Report/Thesis}
-\newcommand{\degreetype}{Type of degree} 
+\newcommand{\reporttitle}{A New Scalable Runtime for LLM Inference}
+\newcommand{\reportauthor}{Hamish McCreanor}
+\newcommand{\supervisor}{Peter Pietzuch}
+\newcommand{\reporttype}{MEng Individual Project}
+\newcommand{\degreetype}{MEng Computing} 
 
 % load some definitions and default packages
 \input{includes}
@@ -25,16 +25,20 @@
 \pagestyle{fancy}
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\begin{comment}
 \begin{abstract}
 Your abstract.
 \end{abstract}
+\end{comment}
 
 \cleardoublepage
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\begin{comment}
 \section*{Acknowledgments}
 Comment this out if not needed.
 
-\clearpage{\pagestyle{empty}\cleardoublepage}
+%\clearpage{\pagestyle{empty}\cleardoublepage}
+\end{comment}
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %--- table of contents
@@ -42,39 +46,39 @@ Comment this out if not needed.
 \tableofcontents 
 
 
-\clearpage{\pagestyle{empty}\cleardoublepage}
+%\clearpage{\pagestyle{empty}\cleardoublepage}
 \pagenumbering{arabic}
 \setcounter{page}{1}
 \fancyhead[LE,RO]{\slshape \rightmark}
 \fancyhead[LO,RE]{\slshape \leftmark}
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\chapter{Introduction}
-
-\begin{figure}[tb]
-\centering
-\includegraphics[width = 0.4\hsize]{./figures/imperial}
-\caption{Imperial College Logo. It's nice blue, and the font is quite stylish. But you can choose a different one if you don't like it.}
-\label{fig:logo}
-\end{figure}
-
-Figure~\ref{fig:logo} is an example of a figure. 
+\chapter{Introduction} % 1-3 pages
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\chapter{Background}
+\chapter{Background} % 10-20 pages
+\section{Preliminaries}
+\subsection{Transformer Architecture}
+\subsection{KV Cache}
 
+\section{Related Work}
+\subsection{PagedAttention}
+\subsection{FlashAttention}
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\chapter{Contribution}
+\chapter{Project Plan} % 1-2 pages
+\section{Identifying Existing Performance Bottlenecks}
+
+\section{Runtime Implementation}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\chapter{Evaluation Plan} % 1-2 pages
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\chapter{Experimental Results}
-
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\chapter{Conclusion}
+\chapter{Ethical Issues} % 1-2 pages
+% Misuse
 
 
 %% bibliography
