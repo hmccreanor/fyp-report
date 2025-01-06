@@ -54,35 +54,74 @@ Comment this out if not needed.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \chapter{Introduction} % 1-3 pages
+% What is the problem?
+% Why is it interesting?
+% How do I propose to solve it?
+As large language models (LLMs) are found useful for ever-wider classes of applications, a trend has arisen focusing on the low-cost, local deployment of these systems.
+While the training of LLMs like LLaMA, BERT and OpenAI's GPTs typically requires months of training and is prohibitive for all but the most well-funded of organisations, performing inference on these models locally is comparatively more feasible.
+This enables developers to create services with tighter LLM integrations - instead of calling a black-box API provided by an LLM provider, they can instead run a local version of the LLM, tuning the inference runtime to more appropriately match the context in which it is called.
+
+As a result, there is currently a vast body of research aiming to improve existing inference systems. 
+The aim of this is to improve LLM inference performance along various axes.
+These include running on lower-powered hardware; running with improved throughput and running at greater energy efficiencies.
+These optimisations focus on specific elements of the inference pipeline, particularly improving KV cache usage and kernel fusion.
+To build systems containing these optimisations, developers frequently turn to high level languages like Python in order to quickly develop the infrastructure surrounding their new technique.
+Developing this way limits the ability of the system to exploit memory-access patterns and application parallelism (especially in a language like Python, with its global interpreter lock) and incurs unnecessary overhead.
+
+This project aims to build on the existing llama.cpp inference server (see \ref{section:llamacpp}) to deliver a system that improves the dispatch of compute kernels by better parallelising the inference pipeline.
+% Talk more about how I will build on llama.cpp
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \chapter{Background} % 10-20 pages
 \section{Preliminaries}
-\subsection{Transformer Architecture}
-\subsection{KV Cache}
+\subsection{LLM Architecture}
+\subsubsection{Transformer Architecture}
+
+\subsection{LLM Inference}
+\subsubsection{KV Cache}
+\subsubsection{Parallelism}
+\subsubsection{Request Batching}
 
 \section{Related Work}
-\subsection{PagedAttention}
-\subsection{FlashAttention}
+\subsection{vLLM}
+\subsubsection{PagedAttention}
+\subsection{Triton}
+\subsection{SGLang}
+\subsection{Triton}
+\subsection{llama.cpp} \label{section:llamacpp}
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \chapter{Project Plan} % 1-2 pages
-\section{Identifying Existing Performance Bottlenecks}
-
-\section{Runtime Implementation}
+% Break down runtime implementation (this probably requires a bit of knowledge about how llama.cpp works)
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \chapter{Evaluation Plan} % 1-2 pages
+\begin{comment}
+1. Run some benchmark on llama.cpp
+2. Run same benchmark on llama.cpp + my system
+3. ...
+4. Profit???
+
+Key requirements for project
+
+Areas on which I could track performance relative to existing system
+- Efficiency (\% of overall resources used)
+- Throughput (tokens/sec)
+\end{comment}
+
+\section{Functional Requirements}
+\section{Performance Metrics}
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \chapter{Ethical Issues} % 1-2 pages
 % Misuse
+% probably a good idea to reference some papers exploring malicious uses of llms (maybe a lit review?)
 
 
 %% bibliography
-\bibliographystyle{apa}
+\bibliographystyle{vancouver}
 
 
 \end{document}
