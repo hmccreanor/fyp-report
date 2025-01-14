@@ -2,3 +2,6 @@
 *.out
 *.aux
 *.toc
+*.bbl
+*.blg
+*.brf
