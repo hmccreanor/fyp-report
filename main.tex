@@ -73,16 +73,95 @@ This project aims to build on the existing llama.cpp inference server (see \ref{
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \chapter{Background} % 10-20 pages
+We provide an overview of transformer architecture in \ref{subsection:llmsexplained}, as well as key components of the inference pipeline in \ref{subsection:llminference}, before detailing existing work around LLM inference runtimes in \ref{section:relatedwork}.
 \section{Preliminaries}
-\subsection{LLM Architecture}
+\subsection{LLMs Explained}\label{subsection:llmsexplained}
 \subsubsection{Transformer Architecture}
+While the term ``Large Language Model'' can be used to describe any model trained on large volumes of textual data, it is frequently used to refer to models that use a variant of the transformer architecture described in \cite{vaswani2017attention}.
+This architecture has superseded recurrent neural networks for language-based tasks owing to its ability to capture long range dependencies between tokens.
+It does this via a unique attention mechanism.
+This, and the other components present in a transformer, are described below.
+\begin{itemize}
+  \item \textbf{Embedding Layers:} 
+    Attention blocks are fed a matrix where each row represents the semantic meaning of each token. This is done by using a learned embedding and applying this to the input tokens.
+  \item \textbf{Positional Encoding:} 
+    Unlike recurrent neural networks, transformer models contain no a priori knowledge of the order of the input sequence.
+    To remedy this, positional encodings are added to the input embeddings before they are fed to the attention block.
+    There are several ways of doing this, however the approach adopted in the \cite{vaswani2017attention} is to use apply sine and cosine functions to the position and dimension of the input vector as follows:
+    \begin{equation*}
+      \begin{split}
+        \textnormal{PE}_{(pos, 2i)} = sin(pos/10000^{2i/d_{model}}) \\ 
+        \textnormal{PE}_{(pos, 2i+1)} = cos(pos/10000^{2i/d_{model}})
+      \end{split}
+    \end{equation*}
+  \item \textbf{Multi-Head Attention:}
+    Transformers use an attention block to describe the relationship between different tokens in a sequence. 
+    This takes as input a key, query and value matrix $K$, $Q$, $V$ respectively. 
+    The key and query matrices are multiplied together to produce a representation of how each token in the sequence relates to each other token.
+    After normalising and applying a softmax function, the matrix is multiplied by $V$, which represents the semantic meaning of each input token.
+    \begin{equation*}
+      \textnormal{Attention}(Q,K,V) = \textnormal{softmax}(\frac{QK^T}{\sqrt{d_k}})V
+    \end{equation*}
+    In practise, multiple attention heads are used and their outputs concatenated.  
+    This allows the model to attend to information learned from different projections $W_i^Q$, $W_i^K$ and $W_i^V$ at the same time.  
+    \begin{equation*}
+      \begin{split}
+        \textnormal{MultiHead}(Q,K,V) = \textnormal{Concat}(\textnormal{head}_1, ..., \textnormal{head}_h)W^O \\
+        \textnormal{where} \: \textnormal{head}_i = \textnormal{Attention}(QW_i^Q, KW^K_i, VW^V_i)
+      \end{split}
+    \end{equation*}
+  \item \textbf{Position-wise Fead-Forward Networks:} 
+    The output of the multi-head attention block is fed to a fully connected neural-network.
+    This takes as input the representation at each position (making it ``position-wise'') and applies two linear transformations separated by a ReLU activation:
+    \begin{equation*}
+      \textnormal{FFN}(x) = \textnormal{max}(0, xW_1 + b_1)W_2 + b_2
+    \end{equation*}
+\end{itemize}
+Multiple blocks consisting of the multi-head attention and feed-forward layers are stacked on top of one another to produce a deeper transformer model.
+\subsubsection{Model Variants}
+The encoder-decoder model introduced in \cite{vaswani2017attention} is not the only variant of the transformer architecture that exists.
+Modifications to the transformer architecture have been made in order to better support different tasks:  
+\begin{itemize}
+  \item \textbf{Encoder-decoder:}
+    With encoder-decoder models, an input sequence is first embedded, then added to a positional encoding before being passed as input to a stack of attention and feed-forward network layers (the ``encoder'') to produce a representation of the input sequence. 
+    As the output sequence is generated, it is fed as input to a similarly structured ``decoder'' block. 
+    This takes an embedded output sequence, with positional encoding, as input.
+    The output of the encoder block is fed to attention blocks in the decoder block in order to model the relationship between the input and output sequence.
+    These models \cite{raffel2020exploring} tend to be used for tasks like sequence to sequence transformation, for example language translation.
+  \item \textbf{Encoder-only:}
+    Encoder-only models use only the encoder block of an encoder-decoder model to produce a vector representation of an input sequence.
+    These models do not produce text directly, but are instead meant to pass their output to a downstream component for further inference, potentially for applications to sentiment analysis or named-entity recognition.
+    Examples of these include the BERT \cite{kenton2019bert} family of models.
+  \item \textbf{Decoder-only:}
+    Decoder-only models like those in the GPT \cite{radford2018improving} series make up the bulk of models used for auto-regressive text generation and completion. 
+    Instead of sending an input prompt to an encoder block, the prompt is instead passed in in conjuction to the output sequence and the model is trained to predict the next token in the sequence \cite{dai2015semi}.
+\end{itemize}
 
-\subsection{LLM Inference}
+
+
+\subsection{LLM Inference}\label{subsection:llminference}
 \subsubsection{KV Cache}
 \subsubsection{Parallelism}
+\begin{comment}
+(sources)
+https://docs.vllm.ai/en/latest/serving/distributed_serving.html
+https://colossalai.org/docs/concepts/paradigms_of_parallelism/
+
+
+data parallel
+- copy model to different gpus
+	- can be used to train on multiple batches in parallel
+
+tensor parallel 
+- split the tensors for a single layer across gpus
+
+pipeline parallel
+- split whole layers across gpus
+\end{comment}
+
 \subsubsection{Request Batching}
 
-\section{Related Work}
+\section{Related Work}\label{section:relatedwork}
 \subsection{vLLM}
 \subsubsection{PagedAttention}
 \subsection{Triton}
