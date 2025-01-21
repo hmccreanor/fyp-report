@@ -83,7 +83,7 @@ It does this via a unique attention mechanism.
 This, and the other components present in a transformer, are described below.
 \begin{itemize}
   \item \textbf{Embedding Layers:} 
-    Attention blocks are fed a matrix where each row represents the semantic meaning of each token. This is done by using a learned embedding and applying this to the input tokens.
+    Attention blocks are fed a matrix where each row represents the semantic meaning of each token. This is done by using an embedding learnt during the training process and applying this to the input tokens.
   \item \textbf{Positional Encoding:} 
     Unlike recurrent neural networks, transformer models contain no a priori knowledge of the order of the input sequence.
     To remedy this, positional encodings are added to the input embeddings before they are fed to the attention block.
@@ -137,10 +137,35 @@ Modifications to the transformer architecture have been made in order to better 
     Instead of sending an input prompt to an encoder block, the prompt is instead passed in in conjuction to the output sequence and the model is trained to predict the next token in the sequence \cite{dai2015semi}.
 \end{itemize}
 
-
-
 \subsection{LLM Inference}\label{subsection:llminference}
-\subsubsection{KV Cache}
+We begin with an overview of the steps taken to perform inference for a single request, before detailing other important aspects of LLM inference like managing the KV cache, methods of parallelism and request batching.
+\subsubsection{Inference Pipeline}\label{subsubsection:inferencepipeline}
+\begin{itemize}
+  \item \textbf{Tokenisation:}
+    In order to convert from a string representation of an input sequence, to a vector representation that a model can understand, tokenisation is applied.
+    This splits the input string into a sequence of tokens present in a vocabulary learnt from the training corpus \cite{radford2019language} \cite{sennrich2015neural}, producing a vector of indices for each token in the input string.
+    These indices are used to index into the learnt embeddings matrix and extract an embedding vector for each input token.
+  \item \textbf{Prefill phase:}
+    The prefill phase refers to the stage in the inference pipeline at which the hidden states (keys and values) of the network from the input sequence are produced.
+    These values are later used to generate output tokens.
+    Additionally, KV cache entries (see \ref{subsubsection:kvcache}) for these tokens are produced and are later used to speed up the autoregressive phase of the inference pipeline.
+    This stage represents an operation over a large matrix and, as such, can saturate the GPU, making this stage largely arithmetic bound.
+  \item \textbf{Autoregressive phase:}
+    In the autoregressive phase, output tokens are generated incrementally and appended back to the output prompt. 
+    The final layer of the transformer produces a probability distribution over all output tokens (typically using a softmax activation), which is sampled from (see \ref{subsubsection:samplingstrategy}) to produce an output token.
+    Since we are only generating one token at a time, this phase is typically bound by the rate at which vectors can be passed to GPU memory.
+    The sequential nature of the autoregressive phase, and its corresponding performance characteristics, has significantly shaped the design of existing LLM runtimes (see \ref{section:relatedwork}).
+  \item \textbf{Detokenisation:}
+    At the end of the autoregressive phase, a vector containing indices into the model vocabulary is produced - this represents the output sequence of the model.
+    In order to convert this vector to a string representation, the vector is sent to the CPU and each element is used to index into the model vocabulary, producing a string for each token.
+    This list of token strings is then joined to form the overall output string.
+\end{itemize}
+
+\subsubsection{KV Cache}\label{subsubsection:kvcache}
+% each token only attends to previously generated tokens
+
+\subsubsection{Hardware}
+
 \subsubsection{Parallelism}
 \begin{comment}
 (sources)
@@ -160,19 +185,20 @@ pipeline parallel
 \end{comment}
 
 \subsubsection{Request Batching}
+\subsubsection{Sampling Strategy}\label{subsubsection:samplingstrategy}
 
 \section{Related Work}\label{section:relatedwork}
 \subsection{vLLM}
 \subsubsection{PagedAttention}
 \subsection{Triton}
-\subsection{SGLang}
-\subsection{Triton}
+\subsection{Orca}
 \subsection{llama.cpp} \label{section:llamacpp}
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \chapter{Project Plan} % 1-2 pages
 % Break down runtime implementation (this probably requires a bit of knowledge about how llama.cpp works)
+% 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \chapter{Evaluation Plan} % 1-2 pages
@@ -187,10 +213,18 @@ Key requirements for project
 Areas on which I could track performance relative to existing system
 - Efficiency (\% of overall resources used)
 - Throughput (tokens/sec)
+
 \end{comment}
+
+Use ShareGPT [cite] and Alpaca [cite] datasets
 
 \section{Functional Requirements}
 \section{Performance Metrics}
+\begin{itemize}
+  \item \textbf{Throughput (tokens/s):}
+  \item \textbf{Time to First Token (s):}
+  \item \textbf{Time Per Output Token (ms):}
+\end{itemize}
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
