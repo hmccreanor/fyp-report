@@ -103,7 +103,8 @@ This, and the other components present in a transformer, are described below.
       \textnormal{Attention}(Q,K,V) = \textnormal{softmax}(\frac{QK^T}{\sqrt{d_k}})V
     \end{equation*}
     In practise, multiple attention heads are used and their outputs concatenated.  
-    This allows the model to attend to information learned from different projections $W_i^Q$, $W_i^K$ and $W_i^V$ at the same time.  
+    Instead of attention blocks just operating on the $K$, $Q$, and $V$ directly, they are multiplied by learned matrices $W^K$, $W^Q$, and $W^V$ to project the input vectors into different spaces.
+    The fact that there are multiple of these matrices $W_i^Q$, $W_i^K$ and $W_i^V$ allows the model to attend to information learnt from different projections concurrently.
     \begin{equation*}
       \begin{split}
         \textnormal{MultiHead}(Q,K,V) = \textnormal{Concat}(\textnormal{head}_1, ..., \textnormal{head}_h)W^O \\
@@ -138,8 +139,10 @@ Modifications to the transformer architecture have been made in order to better 
 \end{itemize}
 
 \subsection{LLM Inference}\label{subsection:llminference}
-We begin with an overview of the steps taken to perform inference for a single request, before detailing other important aspects of LLM inference like managing the KV cache, methods of parallelism and request batching.
+We begin with an overview of the steps taken to perform inference for a single request, before detailing other important aspects of LLM inference like managing the KV cache, distributing computation across multiple compute nodes and request batching.
 \subsubsection{Inference Pipeline}\label{subsubsection:inferencepipeline}
+Performing inference based on a user prompt involves a prefill phase to initialise the state of the transformer model followed by an autoregressive phase to generate an output sequence.
+These steps are sandwiched by tokenisation and detokenisation stages respectively in order to convert between a string and vector representation of the input and output sequence.
 \begin{itemize}
   \item \textbf{Tokenisation:}
     In order to convert from a string representation of an input sequence, to a vector representation that a model can understand, tokenisation is applied.
@@ -154,6 +157,7 @@ We begin with an overview of the steps taken to perform inference for a single r
     In the autoregressive phase, output tokens are generated incrementally and appended back to the output prompt. 
     The final layer of the transformer produces a probability distribution over all output tokens (typically using a softmax activation), which is sampled from (see \ref{subsubsection:samplingstrategy}) to produce an output token.
     Since we are only generating one token at a time, this phase is typically bound by the rate at which vectors can be passed to GPU memory.
+    Further, the sequential dependencies between outputs limits the parallelisability of the autoregressive phase.
     The sequential nature of the autoregressive phase, and its corresponding performance characteristics, has significantly shaped the design of existing LLM runtimes (see \ref{section:relatedwork}).
   \item \textbf{Detokenisation:}
     At the end of the autoregressive phase, a vector containing indices into the model vocabulary is produced - this represents the output sequence of the model.
@@ -162,11 +166,39 @@ We begin with an overview of the steps taken to perform inference for a single r
 \end{itemize}
 
 \subsubsection{KV Cache}\label{subsubsection:kvcache}
-% each token only attends to previously generated tokens
+The KV cache represents an important area with which inference efficiency can be improved.
+During the autoregressive phase of inference, self-attention refers to the key and value vectors $KW_i^K$ and $VW_i^V$ as well as the query vector of the latest output token.
+These key and value vectors have already been calculated at prior iterations and so caching them can reduce the computational overhead at each autoregressive step, as we can use these vectors without recalculation.
+The computed key and value vectors for the newest token are then added to the KV cache, to be reused during the next autoregressive iteration.
+This cache is initially populated during the prefill phase but then grows with the output sequence length. 
+The effective management of the KV cache can be used to help overcome the limited parallelisability of the autoregressive phase of inference \cite{shi2024keep} \cite{pope2023efficiently}.
 
 \subsubsection{Hardware}
+The recent success of LLMs is in large part enabled by the use of Graphics Processing Units (GPUs) \cite{krizhevsky2012imagenet}.
+GPUs are optimised for performing a large number of specialised operations in parallel, in contrast with Central Processing Units (CPUs), which are better suited to performing a more general set of operations sequentially.
+Modern deep neural networks can be distilled down into a sequence of vector and matrix operations.
+These tasks are highly parallelisable and specialised implementations like of linear algebra operations like cuBLAS \cite{cublas} exist to accelerate them on GPU hardware.
+Other software layers like CUDA \cite{nickolls2008scalable} also exist and can be used to implement efficient versions of common deep learning functions.  
+As a result of this, GPUs are well suited for the kind of workloads required by LLMs. 
 
-\subsubsection{Parallelism}
+At a high level, GPUs consist of a series of Streaming Multiprocessors (SMs), each containing multiple Stream Processors (SPs, also referred to as `cores') and some shared memory\cite{choquette2021nvidia}. 
+Each core is designed to support a small set of relatively simple operations, like floating-point and integer arithmetic, as well as logical operations.
+High-bandwidth memory (HBM) is used to transfer data between SMs, while the shared memory on each SM can be used to share common data between threads.
+Tensors like weights and the KV cache are typically stored in HBM and then moved into the SMs at the time of computation \cite{pope2023efficiently}.
+
+% explore other hardware platforms - asics, fpgas, tpus
+In addition to GPUs, other hardware platforms like ASICs, FPGAs and TPUs exist and can be used to further accelerate the operations of LLMs \cite{li2024large}.
+These platforms tend to be more heterogenous in architecture and, as such, most existing LLM runtimes (see \ref{section:relatedwork}) tend to be optimised for a GPU-like architecture.
+
+\subsubsection{Distributed Computation}
+One approach to 
+\begin{itemize}
+  \item \textbf{Data parallelism:}
+  \item \textbf{Tensor parallelism:}
+  \item \textbf{Pipeline parallelism:}
+\end{itemize}
+
+
 \begin{comment}
 (sources)
 https://docs.vllm.ai/en/latest/serving/distributed_serving.html
@@ -185,11 +217,40 @@ pipeline parallel
 \end{comment}
 
 \subsubsection{Request Batching}
+Another method used to address the limited parallelism created by the autoregressive phase of inference is to batch requests. 
+With request batching, we can stack tensors from multiple user requests into the same batch and issue this request to the GPU.
+This enables user requests to be served in parallel and increases GPU utilisation at the same time as maximising use of available memory bandwith.
+
+\begin{itemize}
+  \item \textbf{Naive batching:} The naive approach to batching consists of grouping multiple input prompts into a batch and running inference on it - inference is scheduled at the granularity of requests \cite{yu2022orca}.
+    In order for the input and output batches to be valid matrix shapes, they must be padded with special padding tokens to a fixed size.
+    While simple to implement, this approach can lead to increased latency as well as underutilisation of the GPU. 
+    This is because prompts within a batch do not necessarily generate output sequences of the same length. 
+    If one output sequence has terminated while there are other sequences for which tokens are still being generated it will be unable to be returned to the user until all other sequences terminate.
+    As such the request latency is bounded by the time taken to generate the longest sequence in the batch \cite{yu2022orca}.
+    This also limits the system from serving new requests as they arrive: the new request will need to wait for completion of the entire batch of requests, even if the batch contains requests for which an output has already been generated.
+    As a result, naive batching is limited in its use, only achieving maximal GPU utilisation under very specific usage patterns.
+
+  \item \textbf{Continuous batching:} Continuous batching is proposed as an improvement to naive batching and schedules inference at the granularity of autoregressive iterations \cite{yu2022orca}.
+    At the end of each autoregressive iteration, a set of new tokens is produced for every request in the batch.    
+    A scheduler then monitors the batch to determine the completion status of every request in the batch, dynamically scheduling waiting requests when it detects that a complete output sequence has been generated.
+    This achieves greater utilisation of the GPU since it is no longer executing operations for sequences that have already terminated.
+    It also reduces latency for user requests, as output sequences can be returned as soon as they are terminated.
+    However, this batching technique comes at the cost of increased scheduling overhead as well as limited batching of certain matrix operations.
+    This is because some operations, like computing attention, require their input sequences to be aligned to the same length and position in order to be batched.
+    Because requests are dynamically dispatched, this property no longer holds and thus operations like computing attention blocks are unabled to be batched, in a technique known as ``selective batching'' \cite{yu2022orca}.
+\end{itemize}
+
+
+\subsubsection{Kernel Specialisation}
+% fused kernels
+
 \subsubsection{Sampling Strategy}\label{subsubsection:samplingstrategy}
 
 \section{Related Work}\label{section:relatedwork}
+% speak about different runtimes and their contributions
+% compare performance and justify vllm as open source alternative from which to base work off of
 \subsection{vLLM}
-\subsubsection{PagedAttention}
 \subsection{Triton}
 \subsection{Orca}
 \subsection{llama.cpp} \label{section:llamacpp}
@@ -198,10 +259,17 @@ pipeline parallel
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \chapter{Project Plan} % 1-2 pages
 % Break down runtime implementation (this probably requires a bit of knowledge about how llama.cpp works)
+% I think here is where I break down vllm a bit more thoroughly and link it to llama.cpp?
 % 
 
+\begin{itemize}
+  \item \textbf{Identifying inefficiencies:}
+  \item \textbf{Project report:}
+\end{itemize}
+
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\chapter{Evaluation Plan} % 1-2 pages
+\chapter{Evaluation} % 1-2 pages
 \begin{comment}
 1. Run some benchmark on llama.cpp
 2. Run same benchmark on llama.cpp + my system
