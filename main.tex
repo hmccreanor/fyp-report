@@ -155,7 +155,7 @@ These steps are sandwiched by tokenisation and detokenisation stages respectivel
     This stage represents an operation over a large matrix and, as such, can saturate the GPU, making this stage largely arithmetic bound.
   \item \textbf{Autoregressive phase:}
     In the autoregressive phase, output tokens are generated incrementally and appended back to the output prompt. 
-    The final layer of the transformer produces a probability distribution over all output tokens (typically using a softmax activation), which is sampled from (see \ref{subsubsection:samplingstrategy}) to produce an output token.
+    The final layer of the transformer produces a probability distribution over all output tokens (typically using a softmax activation), which is sampled from to produce an output token.
     Since we are only generating one token at a time, this phase is typically bound by the rate at which vectors can be passed to GPU memory.
     Further, the sequential dependencies between outputs limits the parallelisability of the autoregressive phase.
     The sequential nature of the autoregressive phase, and its corresponding performance characteristics, has significantly shaped the design of existing LLM runtimes (see \ref{section:relatedwork}).
@@ -191,30 +191,27 @@ In addition to GPUs, other hardware platforms like ASICs, FPGAs and TPUs exist a
 These platforms tend to be more heterogenous in architecture and, as such, most existing LLM runtimes (see \ref{section:relatedwork}) tend to be optimised for a GPU-like architecture.
 
 \subsubsection{Distributed Computation}
-One approach to 
+One approach to scaling LLMs to is to distribute computation amongst multiple GPUs. 
+Model data can be shared across multiple nodes in a network to increase inference throughput, while model layers and even individual tensors can be sharded to enable the deployment of larger models.
+These techniques need not be used in isolation and are frequently used in combination in existing training and inference pipelines \cite{kwon2023efficient} \cite{shoeybi2019megatron} \cite{yu2022orca}.
 \begin{itemize}
-  \item \textbf{Data parallelism:}
-  \item \textbf{Tensor parallelism:}
-  \item \textbf{Pipeline parallelism:}
+  \item \textbf{Data parallelism:} Data parallelism involves replicating the weights for an entire model across multiple nodes.
+    Each node is now capable of handling inference requests independently, increasing the number of requests that can be serviced in parallel.  
+    This approach reduces request latency and is simple to implement and scale, but has high memory requirements, as each node must be capable of storing the weights for the entire model as well as any intermediate tensors produced during inference.
+    This is potentially prohibitive for larger models featuring high numbers of weights \cite{rae2021scaling} \cite{brown2020language} \cite{chowdhery2023palm} .
+  \item \textbf{Pipeline parallelism:} Pipeline parallelism is a way to distribute computation that enables training and inference for models with a large number of weights.
+    This approach borrows from the classic computer architecture technique of pipelining \cite{hennessy2011computer}.
+    Nodes are assigned the weight tensors for individual layers of the network and are responsible for executing that layer alone.
+    Data is then passed between nodes in sequence \cite{huang2019gpipe}.
+    This method incurs a small computational overhead in moving data between nodes in the pipeline, however this is relatively minor compared to the scheduling delay incurred in other methods like tensor parallelism.
+    The main drawback of this method is the potential for bubbles to form in the pipeline.
+    This occurs due to nodes taking different times to compute their layer.
+    Nodes that complete early might have to wait idle while nodes upstream of them in the pipeline execute, reducing node utilisation.
+  \item \textbf{Tensor parallelism:} Tensor parallelism extends pipeline parallelism to allow the deployment of models whose layers or intermediate tensors may be too large to fit on just one node.
+    Layer specific tensors, like weights or intermediate activations can be sharded across multiple nodes. 
+    Nodes then work together to complete a subset of the overall tensor computation before combining their results later.
+    While this approach enables even larger models to be executed, it further increases the computational overhead of sharing data across nodes - we now need to synchronise and move data on an intra-layer basis, instead of on an inter-layer basis as in pipeline parallelism \cite{shoeybi2019megatron}.
 \end{itemize}
-
-
-\begin{comment}
-(sources)
-https://docs.vllm.ai/en/latest/serving/distributed_serving.html
-https://colossalai.org/docs/concepts/paradigms_of_parallelism/
-
-
-data parallel
-- copy model to different gpus
-	- can be used to train on multiple batches in parallel
-
-tensor parallel 
-- split the tensors for a single layer across gpus
-
-pipeline parallel
-- split whole layers across gpus
-\end{comment}
 
 \subsubsection{Request Batching}
 Another method used to address the limited parallelism created by the autoregressive phase of inference is to batch requests. 
@@ -242,10 +239,12 @@ This enables user requests to be served in parallel and increases GPU utilisatio
 \end{itemize}
 
 
+\begin{comment}
 \subsubsection{Kernel Specialisation}
 % fused kernels
 
 \subsubsection{Sampling Strategy}\label{subsubsection:samplingstrategy}
+\end{comment}
 
 \section{Related Work}\label{section:relatedwork}
 % speak about different runtimes and their contributions
