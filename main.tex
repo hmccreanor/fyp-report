@@ -73,9 +73,9 @@ This project aims to build on the existing llama.cpp inference server (see \ref{
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \chapter{Background} % 10-20 pages
-We provide an overview of transformer architecture in \ref{subsection:llmsexplained}, as well as key components of the inference pipeline in \ref{subsection:llminference}, before detailing existing work around LLM inference runtimes in \ref{section:relatedwork}.
+We provide an overview of transformer architecture in \ref{subsection:llmarchitecture}, as well as key components of the inference pipeline in \ref{subsection:llminference}, before detailing existing work around LLM inference runtimes in \ref{section:relatedwork}.
 \section{Preliminaries}
-\subsection{LLMs Explained}\label{subsection:llmsexplained}
+\subsection{LLM Architecture}\label{subsection:llmarchitecture}
 \subsubsection{Transformer Architecture}
 While the term ``Large Language Model'' can be used to describe any model trained on large volumes of textual data, it is frequently used to refer to models that use a variant of the transformer architecture described in \cite{vaswani2017attention}.
 This architecture has superseded recurrent neural networks for language-based tasks owing to its ability to capture long range dependencies between tokens.
@@ -242,17 +242,76 @@ This enables user requests to be served in parallel and increases GPU utilisatio
 \begin{comment}
 \subsubsection{Kernel Specialisation}
 % fused kernels
+% flashattention
 
 \subsubsection{Sampling Strategy}\label{subsubsection:samplingstrategy}
+% https://medium.com/@shashankag14/understanding-sampling-techniques-in-large-language-models-llms-dfc28b93f518
+
+\subsubsection{Quantization}
+% Keep the Cost Down: A Review on Methods to Optimize LLM’s KV Cache Consumption
+% speak about how quantization can increase the effective size of the KV cache
 \end{comment}
 
 \section{Related Work}\label{section:relatedwork}
 % speak about different runtimes and their contributions
 % compare performance and justify vllm as open source alternative from which to base work off of
+Various runtimes for performing LLM inference already exist.
+These implement some of the techniques described earlier in order to provide efficient inference for a variety of use cases.
+In order to understand where it might be possible to offer a novel contribution with regard to performance, we first need to understand the features offered by existing solutions.
+Here we present a selection of popular runtimes and detail their main contributions and points of difference.
 \subsection{vLLM}
-\subsection{Triton}
-\subsection{Orca}
+vLLM is a popular LLM runtime designed for high throughput serving of inference requests \cite{kwon2023efficient}.
+It addresses key challenges in memory management that arise during LLM serving, particularly those related to KV cache memory.
+Existing systems often suffer from memory inefficiencies due to fragmentation and over-allocation, limiting their ability to process large batch sizes effectively.
+vLLM solves this problem through a novel memory management mechanism, achieving near-zero KV cache waste \cite{kwon2023efficient}.
+\subsubsection{Key Contributions}
+
+The main contribution of vLLM is its PagedAttention mechanism. 
+On receiving a new request, many inference runtimes pre-allocate a contiguous chunk of memory for the KV cache equal in size to the request's maximum output.
+This can cause internal fragmentation, if the actual output is less than the size of memory allocated, as well as external fragmentation, when smaller requests are unable to be scheduled due to overallocation.
+Moreover, for requests that generate multiple outputs, as is the case with parallel and beam search, the KV cache is stored in a different location for each output and so there is no possibility of memory reuse.
+
+To address this, PagedAttention divides the request's KV cache into smaller units called blocks. 
+These contain a fixed number of key and value vectors associated with a set of tokens. 
+Blocks for a given request's KV cache need not be located in physically contiguous locations and are allocated dynamically as the KV cache for a request grows. 
+This eliminates external fragmentation as each block is the same size.
+The blocks themselves are chosen to be small in size in order to limit internal fragmentation \cite{kwon2023efficient}.
+This is analagous to the paging technique common to modern operating systems \cite{kilburn1962one}, with blocks corresponding to pages, tokens to bytes and requests to processes \cite{kwon2023efficient}.
+By optimising memory allocation, vLLM allows larger batch sizes, significantly improving throughput.
+
+The rest of the vLLM system is built to support this use of PagedAttention and integrates several other common optimisation techniques, including continuous batching, as well as pipeline and tensor parallelism.
+It supports a variety of popular LLMs, including those in the GPT, OPT and LLaMA series \cite{radford2018improving} \cite{zhang2022opt} \cite{touvron2023llama}.
+The PagedAttention optimisation also integrates well with popular decoding techniques like parallel and beam search, facilitating memory sharing across request outputs \cite{kwon2023efficient}.
+
+\subsubsection{Architecture}
+vLLM exposes a Python library and an OpenAI API \cite{openaiapi} compatible web server for inference.
+The frontend is written using the FastAPI library \cite{fastapi}.
+Python is used to implement the bulk of the project, with C++ and CUDA code being used to implement the custom CUDA kernels required to support the PagedAttention mechanism.
+Importantly, control-specific components like the batch scheduler are implemented in Python, representing a potential source of overhead.
+
+vLLM uses a heirarchical class structure to distribute requests amongst GPU workers.
+A single executor is maintained through the lifespan of the runtime.
+This is responsible for creating and running worker processes.
+These are processes dedicated to running model inference on specific GPUs and are tasked with preparing tensors and orchestrating the execution of the model on that node. 
+Importantly, this means that a separate Python process needs to be created for every single worker node, incurring a performance penalty.
+
+On individual GPU workers, a block engine is used to allocate a contiguous chunk of GPU RAM and divide it into physical KV cache blocks.
+A block manager is created to maintain the mapping between logical and physical KV blocks and this is also implemented in Python. 
+NCCL \cite{nccl} is used for communication across distributed GPU workers.
+
+\subsection{TensorRT-LLM}
+NVIDIA's TensorRT-LLM extends the TensorRT deep learning compiler to provide an inference runtime for LLMs \cite{nvidiainferencewhitepaper}.
+The TensorRT compiler is a high-performance deep learning inference optimizer designed to transform trained neural network models into highly efficient computational graphs suitable for deployment on NVIDIA hardware. 
+It achieves this by applying a range of optimizations as well as making use of NVIDIA-specific hardware features \cite{nvidiainferencewhitepaper}. 
+This integration with TensorRT, and its associated performance on NVIDIA products is the principal advantage of this runtime.
+
+TensorRT-LLM provides a Python library similar to that of vLLM through which inference is performed.
+Similarly to vLLM, TensorRT-LLM also implements pipeline and tensor parallelism as well as continuous batching \cite{nvidiainferencewhitepaper}.
+
+% \subsection{Orca}
 \subsection{llama.cpp} \label{section:llamacpp}
+% brief explanation of llama
+% feature explanation
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -282,10 +341,12 @@ Areas on which I could track performance relative to existing system
 - Throughput (tokens/sec)
 
 \end{comment}
+% llama-bench (llama cpp thing)
 
 Use ShareGPT [cite] and Alpaca [cite] datasets
 
 \section{Functional Requirements}
+% Implement OpenAI API
 \section{Performance Metrics}
 \begin{itemize}
   \item \textbf{Throughput (tokens/s):}
@@ -296,11 +357,6 @@ Use ShareGPT [cite] and Alpaca [cite] datasets
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \chapter{Ethical Issues} % 1-2 pages
-% Explain all the bad things llms can do
-% Two angles
-% Misuse and data protection
-% Explain how this project can contribute
-% Greater availability of llms enables smaller actors to misuse them
 The principal two ethical concerns of a project in this field relate to the potential for misuse as well as provenance issues surrounding the dataset on which the model was trained.
 
 The potential for misuse of LLMs is vast, with many instances of LLM abuse already being documented.
