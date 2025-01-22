@@ -310,15 +310,30 @@ Similarly to vLLM, TensorRT-LLM also implements pipeline and tensor parallelism 
 
 % \subsection{Orca}
 \subsection{llama.cpp} \label{section:llamacpp}
-% brief explanation of llama
-% feature explanation
+% llama architecture
+% llama features
+% Custom CUDA kernels for running LLMs on NVIDIA GPUs (support for AMD GPUs via HIP and Moore Threads MTT GPUs via MUSA)
 
+llama.cpp is a popular open-source runtime for LLM inference on CPUs, particularly designed to run models from the LLaMA family \cite{touvron2023llama}. 
+It focuses on memory-efficient execution through quantization and the use of the ggml tensor library, which is tailored for CPU-based matrix operations \cite{ggml}.
+
+The runtime is designed to operate entirely on CPUs, using ggml to build a computation graph and perform optimized tensor computations with minimal memory overhead. 
+It employs mmap to load models directly into memory, reducing the initial memory load and improving scalability on devices with limited RAM. 
+As stated earlier, llama.cpp supports the LLaMA family of models while also providing conversion tools to enable compatibility with other model formats, such as PyTorch checkpoints \cite{paszke2019pytorch}.
+
+A key distinction between llama.cpp and other, more fully-featured runtimes like vLLM lies in their decoding strategies. 
+llama.cpp employs a token-by-token decoding approach, generating one token at a time sequentially for each request. 
+This minimizes memory usage and simplifies execution, making it suitable for resource-constrained environments but limiting overall throughput.
+In contrast, other runtimes utilise batch-level decoding, processing multiple requests and generating tokens in parallel.
+This approach leverages GPU parallelism to achieve significantly higher throughput, particularly for large-scale and concurrent workloads.
+
+llama.cpp does not natively support distributed inference or multi-node serving but can be integrated with external orchestration tools \cite{ray} for these purposes.
+While currently inferior to alternatives like vLLM and TensorRT-LLM in this aspect, its simple design makes it amenable to extension and a suitable starting point for a project aiming to improve on the shortcomings of existing runtimes.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \chapter{Project Plan} % 1-2 pages
 % Break down runtime implementation (this probably requires a bit of knowledge about how llama.cpp works)
 % I think here is where I break down vllm a bit more thoroughly and link it to llama.cpp?
-% 
 
 \begin{itemize}
   \item \textbf{Identifying inefficiencies:}
