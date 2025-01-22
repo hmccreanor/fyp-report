@@ -57,20 +57,25 @@ Comment this out if not needed.
 % What is the problem?
 % Why is it interesting?
 % How do I propose to solve it?
-As large language models (LLMs) are found useful for ever-wider classes of applications, a trend has arisen focusing on the low-cost, local deployment of these systems.
-While the training of LLMs like LLaMA, BERT and OpenAI's GPTs typically requires months of training and is prohibitive for all but the most well-funded of organisations, performing inference on these models locally is comparatively more feasible.
-This enables developers to create services with tighter LLM integrations - instead of calling a black-box API provided by an LLM provider, they can instead run a local version of the LLM, tuning the inference runtime to more appropriately match the context in which it is called.
+As large language models (LLMs) are increasingly adopted for a broad range of applications, there is growing interest in the low-cost, local deployment of these systems. 
+While training LLMs like LLaMA, BERT, and OpenAI’s GPT models requires significant computational resources, the task of performing inference using pre-trained models is comparatively accessible. 
+This enables developers to create applications with tightly integrated LLM functionality without relying on external APIs. 
+Hosting and running LLMs locally offers greater privacy, reduced latency, cost savings, and the ability to fine-tune inference pipelines to suit specific contexts.
 
-As a result, there is currently a vast body of research aiming to improve existing inference systems. 
-The aim of this is to improve LLM inference performance along various axes.
-These include running on lower-powered hardware; running with improved throughput and running at greater energy efficiencies.
-These optimisations focus on specific elements of the inference pipeline, particularly improving KV cache usage and kernel fusion.
-To build systems containing these optimisations, developers frequently turn to high level languages like Python in order to quickly develop the infrastructure surrounding their new technique.
-Developing this way limits the ability of the system to exploit memory-access patterns and application parallelism (especially in a language like Python, with its global interpreter lock) and incurs unnecessary overhead.
+The demand for efficient LLM inference has driven extensive research to improve performance on resource-constrained hardware, increase throughput, and enhance energy efficiency. 
+Key to these efforts is optimizing the inference pipeline, particularly the management of the key-value (KV) cache, which stores intermediate results reused during autoregressive token generation. 
+Efficient use of the KV cache can significantly improve memory utilization and computational speed.
 
-This project aims to build on the existing llama.cpp inference server (see \ref{section:llamacpp}) to deliver a system that improves the dispatch of compute kernels by better parallelising the inference pipeline.
-% Talk more about how I will build on llama.cpp
+Many existing inference runtimes are implemented in high-level languages like Python, which allow for rapid development but exhibit inefficiencies. 
+These systems often rely on distributing computation across multiple processes, introducing latency and computational overhead due to inter-process communication. 
+While process-based parallelism can improve throughput, it is often less efficient than thread-based or GPU-accelerated parallelism, especially for memory-bound tasks such as KV cache updates and reuse.
+These limitations highlight the need for inference runtimes that minimize inter-process communication, leverage efficient memory-access patterns, and exploit parallelism effectively.
 
+This project builds on the llama.cpp inference server to address these inefficiencies. 
+By extending and optimizing this framework, it aims to reduce inter-process communication, enhance memory utilization, and introduce more effective thread-based and GPU-accelerated parallelism. 
+The aim of this project is to develop a runtime environment that enables cost-effective, efficient local deployment of LLMs, improving the performance of current inference systems and expanding their accessibility to a wider range of applications.
+
+%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \chapter{Background} % 10-20 pages
 We provide an overview of transformer architecture in \ref{subsection:llmarchitecture}, as well as key components of the inference pipeline in \ref{subsection:llminference}, before detailing existing work around LLM inference runtimes in \ref{section:relatedwork}.
@@ -331,14 +336,15 @@ llama.cpp does not natively support distributed inference or multi-node serving 
 While currently inferior to alternatives like vLLM and TensorRT-LLM in this aspect, its simple design makes it amenable to extension and a suitable starting point for a project aiming to improve on the shortcomings of existing runtimes.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\begin{comment}
 \chapter{Project Plan} % 1-2 pages
-% Break down runtime implementation (this probably requires a bit of knowledge about how llama.cpp works)
-% I think here is where I break down vllm a bit more thoroughly and link it to llama.cpp?
-
 \begin{itemize}
-  \item \textbf{Identifying inefficiencies:}
-  \item \textbf{Project report:}
+  \item \textbf{Confirming project direction (three weeks):} At present, it seems likely that we will try and improve the state of existing LLM runtimes by building upon llama.cpp 
+  \item \textbf{:}
+  \item \textbf{Evaluation (two weeks):} 
+  \item \textbf{Project report (three weeks):} 
 \end{itemize}
+\end{comment}
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
