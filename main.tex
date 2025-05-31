@@ -57,27 +57,39 @@ Comment this out if not needed.
 % What is the problem?
 % Why is it interesting?
 % How do I propose to solve it?
-As large language models (LLMs) are increasingly adopted for a broad range of applications, there is growing interest in the low-cost, local deployment of these systems. 
-While training LLMs like LLaMA, BERT, and OpenAI’s GPT models requires significant computational resources, the task of performing inference using pre-trained models is comparatively accessible. 
-This enables developers to create applications with tightly integrated LLM functionality without relying on external APIs. 
-Hosting and running LLMs locally offers greater privacy, reduced latency, cost savings, and the ability to fine-tune inference pipelines to suit specific contexts.
+\begin{comment}
+  
+\end{comment}
 
-The demand for efficient LLM inference has driven extensive research to improve performance on resource-constrained hardware, increase throughput, and enhance energy efficiency. 
-Key to these efforts is optimizing the inference pipeline, particularly the management of the key-value (KV) cache, which stores intermediate results reused during autoregressive token generation. 
+As large language models (LLMs) are adopted for an ever-growing range of applications, scaling time spent in training has emerged as the dominant paradigm for improving model performance.
+However, with training costs growing prohibitively expensive, there is increasing interest in other techniques for bettering model output. 
+Test-time compute scaling offers one such way to improve performance, with existing models achieving better results by ``thinking'' for longer.
+This is done by encouraging LLMs to output longer chains of reasoning, shifting scaling costs from training time to test time and enabling existing models to improve without incurring any extra training expense.
+
+The most popular test-time compute scaling approaches leverage a second model to guide a tree-search towards the best answer.
+A generator LLM proposes steps to an answer to a user query and a verifier LLM scores these steps, with this process repeating until a set criteria is met. 
+This is a departure from an assumption made by existing LLM inference systems, which is that only one model will run at a time.
+As such, they are likely to have made architectural decisions that limit the throughput and latency of a test-time scaling approach involving the interplay between multiple LLMs.
+
+This represents an opportunity to build a new system that more effectively supports the test-time scaling use case.
+Key to these efforts is optimizing the memory of such a system, particularly the management of the key-value (KV) cache, which stores intermediate results reused during autoregressive token generation. 
 Efficient use of the KV cache can significantly improve memory utilization and computational speed.
 
-Many existing inference runtimes are implemented in high-level languages like Python, which allow for rapid development but exhibit inefficiencies. 
-These systems often rely on distributing computation across multiple processes, introducing latency and computational overhead due to inter-process communication. 
-While process-based parallelism can improve throughput, it is often less efficient than thread-based or GPU-accelerated parallelism, especially for memory-bound tasks such as KV cache updates and reuse.
-These limitations highlight the need for inference runtimes that minimize inter-process communication, leverage efficient memory-access patterns, and exploit parallelism effectively.
+This project analyses a beam search implementation built upon vLLM, a popular and widely used LLM inference library, to try and identify deficiencies that limit the effective use of GPU memory. 
+Several experiments are conducted to better understand how the implementation's performance changes as a function of various parameters and optimisations to improve GPU memory utilisation are proposed and validated. 
 
-This project builds on the llama.cpp inference server to address these inefficiencies. 
-By extending and optimizing this framework, it aims to reduce inter-process communication, enhance memory utilization, and introduce more effective thread-based and GPU-accelerated parallelism. 
-The aim of this project is to develop a runtime environment that enables cost-effective, efficient local deployment of LLMs, improving the performance of current inference systems and expanding their accessibility to a wider range of applications.
+%%%% Add bit here explaining what optimisations I tried
 
 %%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \chapter{Background} % 10-20 pages
+\begin{comment}
+  - So I think I need to reread + redo a lot of this based on how my project direction has changed
+    - In particular I think the related work section is currently based more on the idea that I would implement my own runtime, rather than modify a runtime to better support a specific usecase 
+  - Need to add sections explaining a PRM and the types of tree search
+    - beam search
+    - best of n
+\end{comment}
 We provide an overview of transformer architecture in \ref{subsection:llmarchitecture}, as well as key components of the inference pipeline in \ref{subsection:llminference}, before detailing existing work around LLM inference runtimes in \ref{section:relatedwork}.
 \section{Preliminaries}
 \subsection{LLM Architecture}\label{subsection:llmarchitecture}
@@ -335,54 +347,12 @@ This approach leverages GPU parallelism to achieve significantly higher throughp
 llama.cpp does not natively support distributed inference or multi-node serving but can be integrated with external orchestration tools \cite{ray} for these purposes.
 While currently inferior to alternatives like vLLM and TensorRT-LLM in this aspect, its simple design makes it amenable to extension and a suitable starting point for a project aiming to improve on the shortcomings of existing runtimes.
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\begin{comment}
-\chapter{Project Plan} % 1-2 pages
-\begin{itemize}
-  \item \textbf{Confirming project direction (three weeks):} At present, it seems likely that we will try and improve the state of existing LLM runtimes by building upon llama.cpp 
-  \item \textbf{:}
-  \item \textbf{Evaluation (two weeks):} 
-  \item \textbf{Project report (three weeks):} 
-\end{itemize}
-\end{comment}
-
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\chapter{Evaluation} % 1-2 pages
-A successful project will produce a new inference runtime satisfying certain functional requirements, and demonstrating improvements against certain performance metrics.  
-These are detailed below.
-
-\section{Functional Requirements}
-The project aims to create a runtime that can support inference across a variety of LLMs and provide support for distributing computation across GPUs, through either tensor or pipeline parallelism.
-Given that the project will build upon the existing llama.cpp runtime, the project aims to offer a strict superset of the features offered by the current llama.cpp implementation.
-This means that we aim to support the same models and maintain the ability to run inference in a CPU-only capacity. 
-
-% Implement OpenAI API
-\section{Performance Metrics}
-Given the timeframe of the project, it is unlikely that we will be able to build a runtime competitive with production-grade implementations like vLLM or TritonRT-LLM.
-The aim of the project is instead to build a software component on top of llama.cpp that addresses some of the unnecessary overhead that occurs in these systems.
-If this demonstrates performance improvements relative to the existing llama.cpp, then we can then hypothesise that integrating a similar component into runtimes like vLLM or TritonRT-LLM would lead to similar improvements.
-
-We evaluate performance in a similar way to existing runtimes \cite{kwon2023efficient}.
-We gather a dataset of input and output prompts \cite{stanfordalpaca} and use them to synthesise user requests.
-We then execute these requests and collect several metrics involved in generating a response.
-
-\begin{itemize}
-  \item \textbf{Throughput (tokens/s):} Throughput measures the number of tokens generated by the LLM within a specific period.
-    It reflects the system’s efficiency in handling bulk workloads, such as processing large documents or serving multiple user requests concurrently. 
-    Higher throughput indicates better performance for scenarios where the system must handle high volumes of data or multiple simultaneous queries.
-  \item \textbf{Time to First Token (s):} Time to First Token (TTFT) refers to the time it takes for the LLM to generate its initial output after receiving a user query or input. 
-    This metric is particularly important for interactive applications where users expect quick feedback. 
-    A low TTFT ensures a more responsive experience by minimizing the delay before any output is presented, even if the full response generation is ongoing.
-  \item \textbf{Latency (s):} Latency measures the total time taken for the LLM to complete processing a user request and deliver the entire output. 
-    This includes both the TTFT and the time taken to generate all subsequent tokens. 
-    Latency is critical for real-time and user-facing applications where overall response time impacts user satisfaction. 
-    Reducing latency ensures the system is faster and more practical for use cases requiring prompt outputs.
-\end{itemize}
-
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \chapter{Ethical Issues} % 1-2 pages
+\begin{comment}
+  - Again, redo this section so that it is more focused on how I am modifying llms for a specific use case, rather than building my own runtime from scratch
+\end{comment}
 The principal two ethical concerns of a project in this field relate to the potential for misuse as well as provenance issues surrounding the dataset on which the model was trained.
 
 The potential for misuse of LLMs is vast, with many instances of LLM abuse already being documented.
@@ -404,6 +374,43 @@ Small and local deployments likely have less of the oversight that large LLM pro
 These two elements must be carefully managed in order to produce a project that adheres to reasonable ethical standards.
 
 As this project represents a proof-of-concept, rather than a full-featured inference engine, any advances made are unlikely to immediately be adopted and thus any ethical concerns are likely to be uncovered at a pace with which they can be identified early on and mitigated quickly.
+
+\chapter{Problem Setting and System Description}
+\begin{comment}
+  - I think this is where I explain the original search and learn benchmark
+  - I should also detail all the optimisations done by marcel + otto for posterity
+  - I also need to list details of the model + config choices as well
+\end{comment}
+
+\chapter{Investigations}
+\begin{comment}
+  - I think this should kind of be structured as a series of questions and answers where I sort of go "here's a hypothesis, here is how I tested it and these are the results".
+
+  - Maybe start by detailing broad questions and then how I drilled down into answering them?
+
+  - Questions I sought to investigate
+    - What factors influence kv cache hit rate?
+    - How does changing the memory split between llm and prm impact performance
+    - What are the memory requirements for both the llm and prm
+      - This is the work I did regarding memory breakdown
+        - Speak about how number of available gpu blocks available is affected by number of kv heads per layers and the number of total layers
+    - How does eviction policy impact performance?
+\end{comment}
+
+\chapter{Analysis}
+\begin{comment}
+  - Explain results and how they point to my optimisation
+\end{comment}
+
+\chapter{Optimisation}
+\begin{comment}
+  - Detail how my optimisation works and how I evaluated it.
+\end{comment}
+
+\chapter{Conclusion and Future Work}
+\begin{comment}
+  - Keep this short and just summarise key findings and elaborate on future optimisations/research directions.
+\end{comment}
 
 
 %% bibliography
