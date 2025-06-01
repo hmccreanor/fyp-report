@@ -89,8 +89,9 @@ Several experiments are conducted to better understand how the implementation's 
   - Need to add sections explaining a PRM and the types of tree search
     - beam search
     - best of n
+  - Maybe also speak about Prism (https://arxiv.org/pdf/2505.04021v1) as it has some related ideas around optimisations (specifically the whole memory size adjustment idea)
 \end{comment}
-We provide an overview of transformer architecture in \ref{subsection:llmarchitecture}, as well as key components of the inference pipeline in \ref{subsection:llminference}, before detailing existing work around LLM inference runtimes in \ref{section:relatedwork}.
+We provide an overview of transformer architecture in \ref{subsection:llmarchitecture}, as well as key components of the inference pipeline in \ref{subsection:llminference}, before detailing existing work around LLM inference runtimes in \ref{section:relatedwork}. We also explain in greater detail the idea of test-time compute scaling and describe relevant techniques in \ref{subsection:testtimecompute}.
 \section{Preliminaries}
 \subsection{LLM Architecture}\label{subsection:llmarchitecture}
 \subsubsection{Transformer Architecture}
@@ -173,6 +174,7 @@ These steps are sandwiched by tokenisation and detokenisation stages respectivel
   \item \textbf{Autoregressive phase:}
     In the autoregressive phase, output tokens are generated incrementally and appended back to the output prompt. 
     The final layer of the transformer produces a probability distribution over all output tokens (typically using a softmax activation), which is sampled from to produce an output token.
+    A temperature parameter can be introduced to modify this probability distribution and control the level of randomness present in the sampling stage.
     Since we are only generating one token at a time, this phase is typically bound by the rate at which vectors can be passed to GPU memory.
     Further, the sequential dependencies between outputs limits the parallelisability of the autoregressive phase.
     The sequential nature of the autoregressive phase, and its corresponding performance characteristics, has significantly shaped the design of existing LLM runtimes (see \ref{section:relatedwork}).
@@ -255,23 +257,47 @@ This enables user requests to be served in parallel and increases GPU utilisatio
     Because requests are dynamically dispatched, this property no longer holds and thus operations like computing attention blocks are unabled to be batched, in a technique known as ``selective batching'' \cite{yu2022orca}.
 \end{itemize}
 
+\subsection{Test Time Compute Scaling}\label{subsection:testtimecompute}
+Historically, approaches to improving LLM performance have centered on training. 
+With larger datasets, larger models and more training epochs, performance on the cross-entropy loss function used for training these models can be made to improve considerably \cite{kaplan2020scaling}.  
+However, scaling in this way eventually becomes prohibitively expensive due to the high cost of owning and operating the hardware required for training.
 
-\begin{comment}
-\subsubsection{Kernel Specialisation}
-% fused kernels
-% flashattention
+This motivates the idea of test-time compute scaling.
+Test-time compute scaling trades off inference latency for higher quality responses to user prompts. 
+By allowing existing LLMs to take longer to respond to user prompts, the quality of responses can be improved considerably \cite{snell2024scaling}, obviating the need to retrain a bigger model on a more expansive dataset.
+Test-time compute scaling describes a broad approach to trading off inference latency for higher quality model outputs - specific methodologies for how to implement this are described below.
 
-\subsubsection{Sampling Strategy}\label{subsubsection:samplingstrategy}
-% https://medium.com/@shashankag14/understanding-sampling-techniques-in-large-language-models-llms-dfc28b93f518
+\subsubsection{Chain of Thought Prompting}
+Chain of thought prompting uses a series of reasoning steps to improve LLM answer quality.  
+By prompting a model with examples of answers containing structured reasoning steps and encouraging it to follow a similar structure in its own responses, model performance has been empirically shown to improve considerably \cite{wei2022chain}.
 
-\subsubsection{Quantization}
-% Keep the Cost Down: A Review on Methods to Optimize LLM’s KV Cache Consumption
-% speak about how quantization can increase the effective size of the KV cache
-\end{comment}
+\subsubsection{Self Consistency}
+Self-consistency is a simple technique to improve model outputs that replaces the decoding strategy present in chain of thought prompting.
+Instead of greedily sampling each token, self-consistency voting generates a diverse set of reasoning paths by sampling multiple tokens in parallel.
+These tokens produce a tree structure, with different branches corresponding to different token choices.
+When all reasoning paths conclude with an answer to the user's question, the answers from all paths are aggregated out by majority vote to produce a final response \cite{wang2022self}.
+
+\subsubsection{Best of N}
+Best of N extends the idea of self-consistency to include some sort of external verifier.
+This verifier can be any machine learning model but is typically some sort of transformer model.
+In the basic best of N setup, this verifier scores all the solutions sampled from the LLM and the one with the highest score is output as the final response.
+With weighted best of N, all the final solutions are aggregated such that reasoning paths that generate the same solution are weighted higher when combined with the verifier score \cite{stiennon2020learning}.  
+
+\subsubsection{Beam Search}
+Beam search provides a way of systematically exploring the tree structure created when generating multiple chains of reasoning in parallel. 
+Multiple chains of reasoning are generated iteratively, with scores being output for each step.
+These scores are then used to guide the search towards higher quality answers - reasoning steps with higher scores are expanded through further sampling and reasoning steps with lower scores are pruned \cite{feng2023alphazero} \cite{yao2023tree}. 
+
+We maintain a fixed number $N$ of active paths and expand each of these paths with $M$ samples. 
+All of these $N \times M$ new reasoning steps are scored and the top $N$ steps are kept for the next iteration. 
+
+Implementations of beam search frequently use a Process Reward Model (PRM) to score the intermediate reasoning steps. 
+PRMs differ from the verifier models used in Best of N search in that they are trained to output a score for every reasoning step, rather than just the final result.
+
+%% Include a diagram of some sort
 
 \section{Related Work}\label{section:relatedwork}
 % speak about different runtimes and their contributions
-% compare performance and justify vllm as open source alternative from which to base work off of
 Various runtimes for performing LLM inference already exist.
 These implement some of the techniques described earlier in order to provide efficient inference for a variety of use cases.
 In order to understand where it might be possible to offer a novel contribution with regard to performance, we first need to understand the features offered by existing solutions.
@@ -343,16 +369,11 @@ llama.cpp employs a token-by-token decoding approach, generating one token at a 
 This minimizes memory usage and simplifies execution, making it suitable for resource-constrained environments but limiting overall throughput.
 In contrast, other runtimes utilise batch-level decoding, processing multiple requests and generating tokens in parallel.
 This approach leverages GPU parallelism to achieve significantly higher throughput, particularly for large-scale and concurrent workloads.
-
 llama.cpp does not natively support distributed inference or multi-node serving but can be integrated with external orchestration tools \cite{ray} for these purposes.
-While currently inferior to alternatives like vLLM and TensorRT-LLM in this aspect, its simple design makes it amenable to extension and a suitable starting point for a project aiming to improve on the shortcomings of existing runtimes.
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \chapter{Ethical Issues} % 1-2 pages
-\begin{comment}
-  - Again, redo this section so that it is more focused on how I am modifying llms for a specific use case, rather than building my own runtime from scratch
-\end{comment}
 The principal two ethical concerns of a project in this field relate to the potential for misuse as well as provenance issues surrounding the dataset on which the model was trained.
 
 The potential for misuse of LLMs is vast, with many instances of LLM abuse already being documented.
@@ -367,20 +388,21 @@ AI fairness is still an open area of research \cite{xivuri2021systematic} and it
 At the same time, the provenance of this training data is also an important ethical consideration.
 Private or sensitive data has the potential to be incorporated into training sets and there exist cases \cite{nasr2023scalable} where this training data has then been generated verbatim at inference time, exposing this sensitive data to an end user.
 
-If successful, our project broadens access to LLMs by making better use of available hardware to perform inference.
-This increases the viability of local inference and opens up these models to a greater proportion of hardware configurations and thus a greater number of users.
+This project aims to investigate potential bottlenecks and limitations of existing inference runtimes as they pertain to scaling test-time compute.
+Eliminating some of these bottlenecks makes test-time compute scaling more feasible and enables users to improve the answer quality of off-the-shelf models without requiring an expensive training process.
 While this represents a boon for the accessibility of this technology, with users no longer limited to a handful of offerings by large companies, it also increases the number of potentially malicious actors who are able to use LLMs.
 Small and local deployments likely have less of the oversight that large LLM providers experience, and thus are more able to misuse this technology.
 These two elements must be carefully managed in order to produce a project that adheres to reasonable ethical standards.
 
-As this project represents a proof-of-concept, rather than a full-featured inference engine, any advances made are unlikely to immediately be adopted and thus any ethical concerns are likely to be uncovered at a pace with which they can be identified early on and mitigated quickly.
+As this project represents a proof-of-concept, rather than a production-ready inference engine, any advances made are unlikely to immediately be adopted and thus any ethical concerns are likely to be uncovered at a pace with which they can be identified early on and mitigated quickly.
 
 \chapter{Problem Setting and System Description}
 \begin{comment}
   - I think this is where I explain the original search and learn benchmark
-  - I should also detail all the optimisations done by marcel + otto for posterity
+  - I should also detail all the optimisations done by marcel + otto for posterity (this also kind of makes it sound like I might have done some work there?)
   - I also need to list details of the model + config choices as well
 \end{comment}
+
 
 \chapter{Investigations}
 \begin{comment}
