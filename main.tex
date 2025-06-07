@@ -296,9 +296,11 @@ Here we present a selection of popular runtimes and detail their main contributi
 vLLM is a popular LLM runtime designed for high throughput serving of inference requests \cite{kwon2023efficient}.
 It addresses key challenges in memory management that arise during LLM serving, particularly those related to KV cache memory.
 Existing systems often suffer from memory inefficiencies due to fragmentation and over-allocation, limiting their ability to process large batch sizes effectively.
-vLLM solves this problem through a novel memory management mechanism, achieving near-zero KV cache waste \cite{kwon2023efficient}.
-\subsubsection{Key Contributions}
+vLLM solves this problem through a novel memory management mechanism called PagedAttention, achieving near-zero KV cache waste \cite{kwon2023efficient}.
+The rest of the vLLM system is built to support this use of PagedAttention and integrates several other common optimisation techniques, including continuous batching, as well as pipeline and tensor parallelism.
+It supports a variety of popular LLMs, including those in the GPT, OPT and LLaMA series \cite{radford2018improving} \cite{zhang2022opt} \cite{touvron2023llama}.
 
+\subsubsection{PagedAttention}
 The main contribution of vLLM is its PagedAttention mechanism. 
 On receiving a new request, many inference runtimes pre-allocate a contiguous chunk of memory for the KV cache equal in size to the request's maximum output.
 This can cause internal fragmentation, if the actual output is less than the size of memory allocated, as well as external fragmentation, when smaller requests are unable to be scheduled due to overallocation.
@@ -310,11 +312,28 @@ Blocks for a given request's KV cache need not be located in physically contiguo
 This eliminates external fragmentation as each block is the same size.
 The blocks themselves are chosen to be small in size in order to limit internal fragmentation \cite{kwon2023efficient}.
 This is analagous to the paging technique common to modern operating systems \cite{kilburn1962one}, with blocks corresponding to pages, tokens to bytes and requests to processes \cite{kwon2023efficient}.
-By optimising memory allocation, vLLM allows larger batch sizes, significantly improving throughput.
 
-The rest of the vLLM system is built to support this use of PagedAttention and integrates several other common optimisation techniques, including continuous batching, as well as pipeline and tensor parallelism.
-It supports a variety of popular LLMs, including those in the GPT, OPT and LLaMA series \cite{radford2018improving} \cite{zhang2022opt} \cite{touvron2023llama}.
-The PagedAttention optimisation also integrates well with popular decoding techniques like parallel and beam search, facilitating memory sharing across request outputs \cite{kwon2023efficient}.
+By passing only the necessary KV cache blocks to the GPU kernel for each request, vLLM avoids overallocation and enables tighter packing of data from multiple requests into a single kernel invocation. 
+This effectively increases the batch size and leads to significantly improved throughput.
+
+\subsubsection{Automatic Prefix Caching}
+The KV cache blocks used by PagedAttention provide a natural mechanism through which prefix caching can be implemented.
+Prefix caching is a technique common to many inference runtimes to avoid recomputing KV cache values across shared input prompts.
+The KV cache blocks of processed requests are cached and reused when a new request comes in with a shared prefix.
+
+\textbf{Implementation}
+vLLM introduces a KV cache manager to handle this automatic prefix caching.
+It maintains a doubly linked list of free KV cache blocks, as well as a list of currently cached KV blocks in use.
+
+When a new request arrives, vLLM computes hash values for the token sequences in the request - these hashes are derived not only from the current tokens but also from the sequence of prefix tokens that precedes them. 
+If a matching hash is found, indicating that the KV cache blocks for those tokens have already been computed, they can be directly reused by the new request.
+
+In the event of a prefix cache miss, vLLM allocates new KV cache blocks by popping from the list of free blocks and populating them with the computed KV values for the unmatched prefix.
+
+If no free KV cache blocks are available, vLLM evicts blocks from the cache. 
+Eviction is done based on a least-recently-used (LRU) policy, with a preference for evicting the blocks associated with the longest prefixes first, as these are less likely to be shared by future requests.
+% diagram
+
 
 \subsubsection{Architecture}
 vLLM exposes a Python library and an OpenAI API \cite{openaiapi} compatible web server for inference.
@@ -331,8 +350,6 @@ Importantly, this means that a separate Python process needs to be created for e
 On individual GPU workers, a block engine is used to allocate a contiguous chunk of GPU RAM and divide it into physical KV cache blocks.
 A block manager is created to maintain the mapping between logical and physical KV blocks and this is also implemented in Python. 
 NCCL \cite{nccl} is used for communication across distributed GPU workers.
-
-%% need to do a lot of work here to explain its prefix caching mechanism
 
 \subsection{TensorRT-LLM}
 NVIDIA's TensorRT-LLM extends the TensorRT deep learning compiler to provide an inference runtime for LLMs \cite{nvidiainferencewhitepaper}.
@@ -375,9 +392,7 @@ llama.cpp does not natively support distributed inference or multi-node serving 
 The principal two ethical concerns of a project in this field relate to the potential for misuse as well as provenance issues surrounding the dataset on which the model was trained.
 
 The potential for misuse of LLMs is vast, with many instances of LLM abuse already being documented.
-LLM abuse typically involves the use of the model to produce harmful or misleading content.
-There already exist proof-of-concepts for LLMs \cite{hazell2023spear} being used to generate phishing messages, with the intent to produce emails that sound more plausible and are more likely to be engaged with by a target.
-In addition to this, LLMs can be used to produce vast quantities misinformation or biased content that are then published to social media platforms \cite{williams2024large}. 
+LLMs have already been used to generate harmful or misleading content, such as phishing messages \cite{hazell2023spear} and large-scale misinformation on social media \cite{williams2024large}.
 End users may be unable to distinguish between content created by a genuine user and content generated by an LLM and thus end up misinformed.
 
 The large size of the datasets required to train these models create potential ethical and data protection issues.
@@ -389,10 +404,10 @@ Private or sensitive data has the potential to be incorporated into training set
 This project aims to investigate potential bottlenecks and limitations of existing inference runtimes as they pertain to scaling test-time compute.
 Eliminating some of these bottlenecks makes test-time compute scaling more feasible and enables users to improve the answer quality of off-the-shelf models without requiring an expensive training process.
 While this represents a boon for the accessibility of this technology, with users no longer limited to a handful of offerings by large companies, it also increases the number of potentially malicious actors who are able to use LLMs.
-Small and local deployments likely have less of the oversight that large LLM providers experience, and thus are more able to misuse this technology.
-These two elements must be carefully managed in order to produce a project that adheres to reasonable ethical standards.
+Small and local deployments likely have less of the oversight that large LLM providers experience, and thus present greater risk.
+These two elements must be carefully managed in order to adhere to reasonable ethical standards.
 
-As this project represents a proof-of-concept, rather than a production-ready inference engine, any advances made are unlikely to immediately be adopted and thus any ethical concerns are likely to be uncovered at a pace with which they can be identified early on and mitigated quickly.
+As a proof-of-concept rather than a production tool, this project’s impact is likely to be limited and gradual, allowing ethical concerns to be addressed as they emerge.
 
 \chapter{Problem Setting and System Description}
 \begin{comment}
