@@ -530,7 +530,7 @@ To that end, we sought to answer the following questions through a series of exp
 \end{itemize}
 These investigations, and their relation to our proposed optimisation, are detailed below.
 
-\subsection{Model Memory Requirements}
+\section{Model Memory Requirements}
 \begin{comment}
   - Need to understand memory breakdown in order to better understand how it is allocated/what can be moved around
   - do this by hooking into vLLM's memory allocation code
@@ -563,7 +563,7 @@ As a result, when we vary vLLM’s \texttt{gpu\_model\_utilization} parameter, w
 This is best observed in figure %% add figure \ref{figure:memory-breakdown} 
 From this, we can confirm that the \texttt{gpu\_model\_utilization} parameter exclusively affects how much space is reserved for the KV cache.
 
-\subsection{Memory Split}
+\section{Memory Split}
 \begin{comment}
   - i think it would be cool if i could explain where the 0.3 thing comes from in terms of theory/number of blocks
   - speak about how block size varies
@@ -582,12 +582,12 @@ We can observe the effect of varying
 
 
 
-\subsection{Batch Size}
+\section{Batch Size}
 \begin{comment}
   - 
 \end{comment}
 
-\subsection{KV Cache Eviction Policy}
+\section{KV Cache Eviction Policy}
 \begin{comment}
   - explain vllm kv cache eviction policy
   - supporting plot
@@ -597,6 +597,10 @@ We can observe the effect of varying
 \begin{comment}
   - Detail how my optimisation works and how it is implemented
 \end{comment}
+
+\section{Motivation}
+\section{Design}
+\section{Implementation}
 
 \chapter{Evaluation}
 \begin{comment}
