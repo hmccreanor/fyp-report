@@ -625,27 +625,70 @@ When the PRM is allocated less KV cache memory, it holds fewer KV cache blocks a
 \begin{figure}[htbp]
   \centering
   \includegraphics[width=\textwidth]{figures/prm_block_usage_low.png}
-  \caption{Number of PRM KV cache blocks allocated at each scheduling step for \texttt{gpu\_model\_utilization}=0.3}
+  \caption{Number of PRM KV cache blocks allocated at each scheduling step for \texttt{gpu\_model\_utilization}=0.3.}
   \label{fig:prm_block_usage_low}
 \end{figure}
 
 \begin{figure}[htbp]
   \centering
   \includegraphics[width=\textwidth]{figures/prm_block_usage_high.png}
-  \caption{Number of PRM KV cache blocks allocated at each scheduling step for \texttt{gpu\_model\_utilization}=0.5}
-  \label{fig:prm_block_usage_low}
+  \caption{Number of PRM KV cache blocks allocated at each scheduling step for \texttt{gpu\_model\_utilization}=0.5.}
+  \label{fig:prm_block_usage_high}
 \end{figure}
+
 
 \section{Batch Size}
 \begin{comment}
+  - motivation
+    - different models may require different batch sizes to achieve optimal throughput
+      - we want to ensure equal throughput between models
   - Explain how batches in vllm are broken up vis a vis pagedattention
+    - because we don't overallocate kv cache, we can fit the kv cache for more requests into memory at one time 
+    - we care about the number of tokens we pass into a kernel, and also what the composition of these tokens are in terms of requests
   - Batch size heatmap for models in isolation
 \end{comment}
 
+In order to achieve optimal system performance, we sought to balance the throughput between the LLM and PRM in order to avoid one particular model becoming a bottleneck.
+This requires tuning the batching parameters of both models individually.
+
+Unlike traditional implementations where each request statically allocates a contiguous chunk of KV cache memory based on the maximum size of a potential request, vLLM avoids overallocation through its use of PagedAttention, passing only the KV values necessary for the given input tokens.
+This enables the system to fit more active sequences into memory simultaneously, increasing effective batch sizes.
+
+In the context of batched inference, we are concerned not only with how many tokens are passed to each attention kernel invocation, but also with the composition of these tokens in terms of how many distinct sequences they represent.
+Choosing larger batch sizes may improve hardware utilization, but excessively heterogeneous batches composed can potentially also introduce fragmentation if block sizes are large relative to typical sequence lengths, thus limiting efficiency.
+
+To explore this tradeoff, we varied two key parameters in vLLM’s scheduling configuration:
+
+\begin{itemize}
+  \item \texttt{max\_num\_batched\_tokens}, which sets the maximum number of input tokens passed into a single attention kernel. 
+    This directly controls the overall compute workload per kernel call.
+  \item \texttt{max\_num\_seqs}, which limits how many distinct requests can contribute tokens to that kernel. 
+    This determines the diversity and potential fragmentation of the batch.
+\end{itemize}
+
+Figures \ref{fig:prm_batch_size_tradeoff} and \ref{fig:llm_batch_size_tradeoff} illustrate the effect of these parameters on PRM and LLM throughput, respectively. 
+
+
+%%%%%%% INCLUDE A CONCLUSION OF SOME SORT HERE WHEN I HAVE BETTER RESULTS!!
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{figures/prm_batch_size_tradeoff.png}
+  \caption{Analysing the effect of varying \texttt{max\_num\_seqs} and \texttt{max\_num\_batched\_tokens} on PRM throughput.}
+  \label{fig:prm_batch_size_tradeoff}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{figures/llm_batch_size_tradeoff.png}
+  \caption{Analysing the effect of varying \texttt{max\_num\_seqs} and \texttt{max\_num\_batched\_tokens} on LLM throughput.}
+  \label{fig:llm_batch_size_tradeoff}
+\end{figure}
+
 \section{KV Cache}
 \begin{comment}
-  - kv cache hit rate
-  - kv cache totals
+  - kv cache hit rate plot
+  - kv cache totals plot
   - explain vllm kv cache eviction policy
   - supporting plot
 \end{comment}
