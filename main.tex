@@ -25,11 +25,9 @@
 \pagestyle{fancy}
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\begin{comment}
 \begin{abstract}
 Your abstract.
 \end{abstract}
-\end{comment}
 
 \cleardoublepage
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -83,18 +81,9 @@ Several experiments are conducted to better understand how the implementation's 
 %%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \chapter{Background} % 10-20 pages
-\begin{comment}
-  - So I think I need to reread + redo a lot of this based on how my project direction has changed
-    - In particular I think the related work section is currently based more on the idea that I would implement my own runtime, rather than modify a runtime to better support a specific usecase 
-  - Need to add sections explaining a PRM and the types of tree search
-    - beam search
-    - best of n
-  - Maybe also speak about Prism (https://arxiv.org/pdf/2505.04021v1) as it has some related ideas around optimisations (specifically the whole memory size adjustment idea)
-\end{comment}
-We provide an overview of transformer architecture in \ref{subsection:llmarchitecture}, as well as key components of the inference pipeline in \ref{subsection:llminference}, before detailing existing work around LLM inference runtimes in \ref{section:relatedwork}. We also explain in greater detail the idea of test-time compute scaling and describe relevant techniques in \ref{subsection:testtimecompute}.
-\section{Preliminaries}
-\subsection{LLM Architecture}\label{subsection:llmarchitecture}
-\subsubsection{Transformer Architecture}
+We provide an overview of transformer architecture in \ref{section:llmarchitecture}, as well as key components of the inference pipeline in \ref{section:llminference}, before detailing the idea of test-time compute scaling and describing relevant techniques in \ref{section:testtimecompute}.
+\section{LLM Architecture}\label{section:llmarchitecture}
+\subsection{Transformer Architecture}
 While the term ``Large Language Model'' can be used to describe any model trained on large volumes of textual data, it is frequently used to refer to models that use a variant of the transformer architecture described in \cite{vaswani2017attention}.
 This architecture has superseded recurrent neural networks for language-based tasks owing to its ability to capture long range dependencies between tokens.
 It does this via a unique attention mechanism.
@@ -156,9 +145,9 @@ Modifications to the transformer architecture have been made in order to better 
     Instead of sending an input prompt to an encoder block, the prompt is instead passed in in conjuction to the output sequence and the model is trained to predict the next token in the sequence \cite{dai2015semi}.
 \end{itemize}
 
-\subsection{LLM Inference}\label{subsection:llminference}
+\section{LLM Inference}\label{section:llminference}
 We begin with an overview of the steps taken to perform inference for a single request, before detailing other important aspects of LLM inference like managing the KV cache, distributing computation across multiple compute nodes and request batching.
-\subsubsection{Inference Pipeline}\label{subsubsection:inferencepipeline}
+\subsection{Inference Pipeline}\label{subsection:inferencepipeline}
 Performing inference based on a user prompt involves a prefill phase to initialise the state of the transformer model followed by an autoregressive phase to generate an output sequence.
 These steps are sandwiched by tokenisation and detokenisation stages respectively in order to convert between a string and vector representation of the input and output sequence.
 \begin{itemize}
@@ -169,10 +158,10 @@ These steps are sandwiched by tokenisation and detokenisation stages respectivel
   \item \textbf{Prefill phase:}
     The prefill phase refers to the stage in the inference pipeline at which the hidden states (keys and values) of the network from the input sequence are produced.
     These values are later used to generate output tokens.
-    Additionally, KV cache entries (see \ref{subsubsection:kvcache}) for these tokens are produced and are later used to speed up the autoregressive phase of the inference pipeline.
+    Additionally, KV cache entries (see \ref{subsection:kvcache}) for these tokens are produced and are later used to speed up the autoregressive phase of the inference pipeline.
     This stage represents an operation over a large matrix and, as such, can saturate the GPU, making this stage largely arithmetic bound.
   \item \textbf{Autoregressive phase:}
-    In the autoregressive phase, output tokens are generated incrementally and appended back to the output prompt. 
+    In the autoregressive phase (also referred to as the decode phase), output tokens are generated incrementally and appended back to the output prompt. 
     The final layer of the transformer produces a probability distribution over all output tokens (typically using a softmax activation), which is sampled from to produce an output token.
     A temperature parameter can be introduced to modify this probability distribution and control the level of randomness present in the sampling stage.
     Since we are only generating one token at a time, this phase is typically bound by the rate at which vectors can be passed to GPU memory.
@@ -184,7 +173,7 @@ These steps are sandwiched by tokenisation and detokenisation stages respectivel
     This list of token strings is then joined to form the overall output string.
 \end{itemize}
 
-\subsubsection{KV Cache}\label{subsubsection:kvcache}
+\subsection{KV Cache}\label{subsection:kvcache}
 The KV cache represents an important area with which inference efficiency can be improved.
 During the autoregressive phase of inference, self-attention refers to the key and value vectors $KW_i^K$ and $VW_i^V$ as well as the query vector of the latest output token.
 These key and value vectors have already been calculated at prior iterations and so caching them can reduce the computational overhead at each autoregressive step, as we can use these vectors without recalculation.
@@ -192,7 +181,7 @@ The computed key and value vectors for the newest token are then added to the KV
 This cache is initially populated during the prefill phase but then grows with the output sequence length. 
 The effective management of the KV cache can be used to help overcome the limited parallelisability of the autoregressive phase of inference \cite{shi2024keep} \cite{pope2023efficiently}.
 
-\subsubsection{Hardware}
+\subsection{Hardware}
 The recent success of LLMs is in large part enabled by the use of Graphics Processing Units (GPUs) \cite{krizhevsky2012imagenet}.
 GPUs are optimised for performing a large number of specialised operations in parallel, in contrast with Central Processing Units (CPUs), which are better suited to performing a more general set of operations sequentially.
 Modern deep neural networks can be distilled down into a sequence of vector and matrix operations.
@@ -209,7 +198,7 @@ Tensors like weights and the KV cache are typically stored in HBM and then moved
 In addition to GPUs, other hardware platforms like ASICs, FPGAs and TPUs exist and can be used to further accelerate the operations of LLMs \cite{li2024large}.
 These platforms tend to be more heterogenous in architecture and, as such, most existing LLM runtimes (see \ref{section:relatedwork}) tend to be optimised for a GPU-like architecture.
 
-\subsubsection{Distributed Computation}
+\subsection{Distributed Computation}
 One approach to scaling LLMs to is to distribute computation amongst multiple GPUs. 
 Model data can be shared across multiple nodes in a network to increase inference throughput, while model layers and even individual tensors can be sharded to enable the deployment of larger models.
 These techniques need not be used in isolation and are frequently used in combination in existing training and inference pipelines \cite{kwon2023efficient} \cite{shoeybi2019megatron} \cite{yu2022orca}.
@@ -232,7 +221,7 @@ These techniques need not be used in isolation and are frequently used in combin
     While this approach enables even larger models to be executed, it further increases the computational overhead of sharing data across nodes - we now need to synchronise and move data on an intra-layer basis, instead of on an inter-layer basis as in pipeline parallelism \cite{shoeybi2019megatron}.
 \end{itemize}
 
-\subsubsection{Request Batching}
+\subsection{Request Batching}
 Another method used to address the limited parallelism created by the autoregressive phase of inference is to batch requests. 
 With request batching, we can stack tensors from multiple user requests into the same batch and issue this request to the GPU.
 This enables user requests to be served in parallel and increases GPU utilisation at the same time as maximising use of available memory bandwith.
@@ -257,7 +246,7 @@ This enables user requests to be served in parallel and increases GPU utilisatio
     Because requests are dynamically dispatched, this property no longer holds and thus operations like computing attention blocks are unabled to be batched, in a technique known as ``selective batching'' \cite{yu2022orca}.
 \end{itemize}
 
-\subsection{Test Time Compute Scaling}\label{subsection:testtimecompute}
+\section{Test Time Compute Scaling}\label{section:testtimecompute}
 Historically, approaches to improving LLM performance have centered on training. 
 With larger datasets, larger models and more training epochs, performance on the cross-entropy loss function used for training these models can be made to improve considerably \cite{kaplan2020scaling}.  
 However, scaling in this way eventually becomes prohibitively expensive due to the high cost of owning and operating the hardware required for training.
@@ -267,23 +256,23 @@ Test-time compute scaling trades off inference latency for higher quality respon
 By allowing existing LLMs to take longer to respond to user prompts, the quality of responses can be improved considerably \cite{snell2024scaling}, obviating the need to retrain a bigger model on a more expansive dataset.
 Test-time compute scaling describes a broad approach to trading off inference latency for higher quality model outputs - specific methodologies for how to implement this are described below.
 
-\subsubsection{Chain of Thought Prompting}
+\subsection{Chain of Thought Prompting}
 Chain of thought prompting uses a series of reasoning steps to improve LLM answer quality.  
 By prompting a model with examples of answers containing structured reasoning steps and encouraging it to follow a similar structure in its own responses, model performance has been empirically shown to improve considerably \cite{wei2022chain}.
 
-\subsubsection{Self Consistency}
-Self-consistency is a simple technique to improve model outputs that replaces the decoding strategy present in chain of thought prompting.
+\subsection{Self Consistency Sampling}
+Self-consistency sampling is a simple technique to improve model outputs that replaces the decoding strategy present in chain of thought prompting.
 Instead of greedily sampling each token, self-consistency voting generates a diverse set of reasoning paths by sampling multiple tokens in parallel.
 These tokens produce a tree structure, with different branches corresponding to different token choices.
 When all reasoning paths conclude with an answer to the user's question, the answers from all paths are aggregated out by majority vote to produce a final response \cite{wang2022self}.
 
-\subsubsection{Best of N}
-Best of N extends the idea of self-consistency to include some sort of external verifier.
+\subsection{Best-of-N Sampling}
+Best-of-N sampling extends the idea of self-consistency to include some sort of external verifier.
 This verifier can be any machine learning model but is typically some sort of transformer model.
-In the basic best of N setup, this verifier scores all the solutions sampled from the LLM and the one with the highest score is output as the final response.
-With weighted best of N, all the final solutions are aggregated such that reasoning paths that generate the same solution are weighted higher when combined with the verifier score \cite{stiennon2020learning}.  
+In the basic best-of-n setup, this verifier scores all the n solutions sampled from the LLM and the one with the highest score is output as the final response.
+With weighted best-of-n, all the final solutions are aggregated such that reasoning paths that generate the same solution are weighted higher when combined with the verifier score \cite{stiennon2020learning}.  
 
-\subsubsection{Beam Search}
+\subsection{Beam Search}
 Beam search provides a way of systematically exploring the tree structure created when generating multiple chains of reasoning in parallel. 
 Multiple chains of reasoning are generated iteratively, with scores being output for each step.
 These scores are then used to guide the search towards higher quality answers - reasoning steps with higher scores are expanded through further sampling and reasoning steps with lower scores are pruned \cite{feng2023alphazero} \cite{yao2023tree}. 
@@ -292,16 +281,17 @@ We maintain a fixed number $N$ of active paths and expand each of these paths wi
 All of these $N \times M$ new reasoning steps are scored and the top $N$ steps are kept for the next iteration. 
 
 Implementations of beam search frequently use a Process Reward Model (PRM) to score the intermediate reasoning steps. 
-PRMs differ from the verifier models used in Best of N search in that they are trained to output a score for every reasoning step, rather than just the final result.
+PRMs differ from the verifier models used in best-of-n search in that they are trained to output a score for every reasoning step, rather than just the final result.
 
 %% Include a diagram of some sort
 
-\section{Related Work}\label{section:relatedwork}
+\chapter{Related Work}
 % speak about different runtimes and their contributions
 Various runtimes for performing LLM inference already exist.
 These implement some of the techniques described earlier in order to provide efficient inference for a variety of use cases.
 In order to understand where it might be possible to offer a novel contribution with regard to performance, we first need to understand the features offered by existing solutions.
 Here we present a selection of popular runtimes and detail their main contributions and points of difference.
+\section{Inference Runtimes}\label{section:inferenceruntimes}
 \subsection{vLLM}
 vLLM is a popular LLM runtime designed for high throughput serving of inference requests \cite{kwon2023efficient}.
 It addresses key challenges in memory management that arise during LLM serving, particularly those related to KV cache memory.
@@ -342,6 +332,8 @@ On individual GPU workers, a block engine is used to allocate a contiguous chunk
 A block manager is created to maintain the mapping between logical and physical KV blocks and this is also implemented in Python. 
 NCCL \cite{nccl} is used for communication across distributed GPU workers.
 
+%% need to do a lot of work here to explain its prefix caching mechanism
+
 \subsection{TensorRT-LLM}
 NVIDIA's TensorRT-LLM extends the TensorRT deep learning compiler to provide an inference runtime for LLMs \cite{nvidiainferencewhitepaper}.
 The TensorRT compiler is a high-performance deep learning inference optimizer designed to transform trained neural network models into highly efficient computational graphs suitable for deployment on NVIDIA hardware. 
@@ -352,7 +344,7 @@ TensorRT-LLM provides a Python library similar to that of vLLM through which inf
 Similarly to vLLM, TensorRT-LLM also implements pipeline and tensor parallelism as well as continuous batching \cite{nvidiainferencewhitepaper}.
 
 % \subsection{Orca}
-\subsection{llama.cpp} \label{section:llamacpp}
+\subsection{llama.cpp}\label{subsection:llama.cpp}
 % llama architecture
 % llama features
 % Custom CUDA kernels for running LLMs on NVIDIA GPUs (support for AMD GPUs via HIP and Moore Threads MTT GPUs via MUSA)
@@ -370,6 +362,12 @@ This minimizes memory usage and simplifies execution, making it suitable for res
 In contrast, other runtimes utilise batch-level decoding, processing multiple requests and generating tokens in parallel.
 This approach leverages GPU parallelism to achieve significantly higher throughput, particularly for large-scale and concurrent workloads.
 llama.cpp does not natively support distributed inference or multi-node serving but can be integrated with external orchestration tools \cite{ray} for these purposes.
+
+\section{Optimisations}\label{section:optimisations}
+\subsection{Sarathi-Serve}
+\subsection{PodAttention}
+\subsection{NanoFlow}
+\subsection{Prism}
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -402,7 +400,96 @@ As this project represents a proof-of-concept, rather than a production-ready in
   - I should also detail all the optimisations done by marcel + otto for posterity (this also kind of makes it sound like I might have done some work there?)
   - I also need to list details of the model + config choices as well
 \end{comment}
+Here we describe in greater detail the system we use as a baseline for an implementation of test-time compute scaling. 
+The original system we used came from an open-source project called `Search and Learn' \cite{beeching2024scalingtesttimecompute}.
+This project implements several strategies for scaling test-time compute including beam search and best-of-n sampling. 
+The `Search and Learn' project was primarily created to provide an open-source reference implementation of popular test-time compute scaling techniques that had been detailed in other studies \cite{snell2024scaling}.
+As such, it is unconcerned with performance and lacks several easily-made modifications that would improve performance considerably.
+These modifications are detailed below. 
+We also list key parameter choices and settings before explaining and justifying our main evaluation metric.
 
+\section{Search and Learn}
+The `Search and Learn' project implements several popular test-time compute scaling techniques. 
+These include best-of-n sampling, beam search and a novel Diverse Verifier Tree Search (DVTS) algorithm \cite{beeching2024scalingtesttimecompute}.
+The aim of the project is to empirically demonstrate that different scaling techniques can be used depending on the problem difficulty and compute budget.
+This is orthogonal to the goal of this project, which is to investigate bottlenecks in test-time scaling implementations, and so any optimisation we make or propose must not alter the output content of the system. 
+Instead, we use `Search and Learn' as a reference point from which to begin our analysis and benchmarking.
+We also use it as a starting point for our optimisation implementations.
+For the purposes of our analysis, we only concerned ourselves with the beam search implementation, as this was shown to be the best search strategy on average \cite{beeching2024scalingtesttimecompute}.
+
+\section{Problem Setting}
+\subsection{Models}
+The beam search implementation uses two transformer-based models.
+The first, refered to as the `LLM', generates new reasoning steps in response to a user prompt. 
+For our system, we use Meta's \texttt{Llama-3.2-1B-Instruct} model \cite{grattafiori2024llama}.
+The second, refered to as the `PRM', produces a score for each reasoning step in the current LLM output. 
+This is provided via the \texttt{Llama3.1-8B-PRM-Deepseek-Data} model \cite{dong2024rlhf} \cite{ArmoRM} \cite{xiong2024iterative}.
+The LLM generates new reasoning steps as the beam search tree is explored. 
+It requires a prefill stage to compute the attention states for all previous reasoning steps, but then uses the autoregressive decode stage to produce new chains of reasoning. 
+As decode is limited by memory bandwidth rather than GPU FLOPs, we say this model is decode-bound. % is this true/the right way of explaining this?
+The PRM scores a reasoning step by taking as input all of the LLM generated reasoning up to and including that step.
+It emits a single output token and then the logits in the final layer for specific tokens are extracted and used as a score.
+This is repeated for all reasoning steps.
+The fact that the PRM only outputs a single token makes it heavily bound by the prefill stage of the inference pipeline.
+
+The unique distinction between the LLM being decode-bound and the PRM being prefill-bound opens up opportunities for optimisation. % do i include this seeing as how my optimisations don't use this fact?
+
+% diagram for this showing how prm creates a score for each step
+
+\subsection{Dataset}
+The original `Search and Learn' project uses a subset of 500 problems selected from the MATH dataset, a selection of problems taken from high-school maths competitions \cite{hendrycks2021measuring}.
+These problems are assigned difficulty levels from one to five.
+For our benchmarking, we use a set of 128 problems sampled uniformly across these difficulty levels.
+
+\subsection{Beam Search Parameters}
+To ensure our accuracy on the MATH dataset remains comparable with the original `Search and Learn` project for the purpose of evaluation, we keep our beam search parameters the same.
+Namely we use a beam width of four and set a maximum tree depth of 40.
+% Maybe this bit is weak - could take out since they can always look at the search and learn benchmark
+% actually could always just add these two sentences to the evaluation metric section
+
+\section{Modifications}
+To ensure a reasonable baseline from which to evaluate performance, several changes were made to the `Search and Learn` reference code.
+These represent simple optimisations to correct obvious performance deficiencies in the original codebase and were implemented by several members of Imperial College London's Large-Scale Data and Systems Group.
+
+\subsection{Consistent Runtime} 
+The original `Search and Learn` code uses two different runtimes to run the LLM and PRM, vLLM and Hugging Face's \texttt{transformers} library \cite{kwon2023efficient} \cite{wolf2019huggingface} respectively.
+The decision was made to use the same runtime for the two models in order to provide a consistent runtime as a starting point for analysis.
+vLLM is a library specifically optimized for inference performance, whereas the inference functionality in \texttt{transformers} is more of an add-on, primarily intended to demonstrate the range of models it supports.
+As such, vLLM was chosen over \texttt{transformers}.
+One significant impact of this is that it means the PRM benefits from vLLM's built in prefix caching, which is not a feature of the \texttt{transformers} library.
+
+\subsection{Score Cache}
+For each node in the beam search tree, the PRM needs to run to score the associated reasoning step.
+This represents repeated computation, as the PRM score for a given reasoning step will remain the same regardless of how deeply the search tree is explored.
+A score cache was implemented that holds the associated scores for previous PRM invocations.
+
+\subsection{Continuous Problem Batching}
+One major improvement in throughput comes from the implementation of continuous problem batching.
+The `Search and Learn' implementation groups the MATH dataset questions into batches and feeds these into the beam search implementation, only running beam search on one batch at a time.
+Owing to the varying difficulty of problems in this dataset, problems terminate their beam search at different times, meaning that the size of the input batches to both the LLM and PRM decrease as the search progresses, leading to underutilisation of the GPU.
+To remedy this, a `minimum problem batch size' is introduced.
+If the size of the input batch to the LLM or PRM is less than this minimum, problems from other batches are fed in to ensure that the GPU is fully utilised - this dramatically improves system throughput.
+
+\subsection{End of Sequence Sampling}
+The `Search and Learn' implementation imposes a maximum tree depth for the beam search.
+When this depth is reached, instead of terminating the response, the implementation instead continues to sample from the beam until an end of sequence token is produced - we remove this feature in our implementation.
+Empirically, sampling in this manner does little to improve the accuracy of the system on the MATH dataset.
+If a problem has reached the maximum tree depth without terminating, the current chain of reasoning has likely diverged significantly from the correct answer and extra sampling is unlikely to improve the quality of the response.
+
+End of sequence sampling dramatically changes the execution profile of the system, with a long execution period for both the LLM and PRM following the short, regular switching between models in earlier steps.
+This more closely resembles the execution profile of a naive, non-test time scaling implementation. % bit weak, fix
+As such, when we hit our maximum tree depth, we instead just output the response generated by the beam up to that point. 
+
+\section{Evaluation Metrics}
+We choose to focus our evaluation on the throughput of the test-time scaling system, rather than on latency.
+This is motivated by the nature of the prompts that users typically submit to such systems - these are typically difficult problems involving long chains of reasoning.
+As a result, users typically anticipate slower response times. 
+In this setting, overall throughput, measured in tokens or prompts processed per unit time, better captures the performance bottlenecks and scalability of the system than per-query latency.
+
+To validate that our optimisations preserve functional correctness, we consider the accuracy of the system on the MATH dataset. 
+We run the original `Search and Learn` system on the MATH dataset to establish an accuracy baseline and rerun our optimised system on the same dataset to test that this accuracy has been maintained.
+If it has, we can conclude with some degree of confidence that our optimisations have not altered the core behaviour of the system as it pertains to output content.
+Notably, we do not compare outputs directly between systems, as the inherent non-determinism in vLLM, due to factors such as sampling temperature, makes meaningful per-token comparisons impossible.
 
 \chapter{Investigations}
 \begin{comment}
@@ -412,21 +499,93 @@ As this project represents a proof-of-concept, rather than a production-ready in
 
   - Questions I sought to investigate
     - What factors influence kv cache hit rate?
+      - How does eviction policy impact performance?
     - How does changing the memory split between llm and prm impact performance
     - What are the memory requirements for both the llm and prm
       - This is the work I did regarding memory breakdown
-        - Speak about how number of available gpu blocks available is affected by number of kv heads per layers and the number of total layers
-    - How does eviction policy impact performance?
 \end{comment}
 
-\chapter{Analysis}
+This project seeks to understand what throughput improvements to a beam search system are possible by optimising memory footprint.
+This encompasses both inter-model memory considerations, like the split of memory between models, as well as intra-model considerations, like how a model's KV cache is managed.
+To that end, we sought to answer the following questions through a series of experiments and investigations:
+\begin{itemize}
+    \item \textbf{What are the components of the LLM and PRM's memory requirements?}
+    \item \textbf{How does changing the GPU memory split between LLM and PRM impact performance?}
+    \item \textbf{What factors influence the KV cache hit rate?}
+\end{itemize}
+These investigations, and their relation to our proposed optimisation, are detailed below.
+
+\subsection{Model Memory Requirements}
 \begin{comment}
-  - Explain results and how they point to my optimisation
+  - Need to understand memory breakdown in order to better understand how it is allocated/what can be moved around
+  - do this by hooking into vLLM's memory allocation code
+    - explain how this works
+      - runs a dry run with maximum number of tokens
+      - sees peak allocated memory by torch, as well as non-torch allocated memory
+      - breaks this down into model weights, activations (we assume), non-torch allocated memory (nccl communicators etc. )
+      - the rest is allocated as kv cache memory
+    - Speak about how number of available gpu blocks available is affected by number of kv heads per layers and the number of total layers
+  - as we can see, varying the utilisation parameter only changes the amount of memory allocated for the kv cache 
+\end{comment}
+We initially seek to better understand the memory footprint of a given model.
+By understanding this in greater detail, we can more effectively design strategies to use memory optimally.
+
+To do this, we hook into the code that vLLM uses to determine the size of a model's KV cache.
+This process involves running a dry inference pass with the maximum number of tokens the model is configured to handle in a single request.
+After this run, vLLM records the peak memory allocated by PyTorch
+It also records any memory allocations that occur outside of PyTorch - these may arise as result of libraries like NCCL using GPU memory for communication primitives.
+This total memory usage is then broken down into several components and used to determine the size of the KV cache.
+
+Firstly, there is memory used for model weights - this is static and a function of the model used.
+After this, we infer the memory used for intermediate activations during the dry run - this is not explicitly reported but can be assumed based on the remaining PyTorch-allocated memory left after accounting for model weights.
+Non-PyTorch memory allocations, such as those for NCCL communicators and other runtime overheads, are accounted for separately by subtracting the peak GPU memory usage as measured by CUDA from the peak GPU memory used by PyTorch.
+The memory remaining after these components are accounted for is allocated for vLLM's KV cache blocks.
+
+\begin{equation*}
+  \text{Mem}_{\text{KV}} = \text{Mem}_{\text{Total}} \times \text{Utilisation} - (\text{Mem}_{\text{Activations}} + \text{Mem}_{\text{Weights}} + \text{Mem}_{\text{NonTorch}})
+\end{equation*}
+As a result, when we vary vLLM’s \texttt{gpu\_model\_utilization} parameter, which controls what fraction of total available memory is used for the KV cache, we observe that only the memory allocated for the KV cache changes, with the allocations for weights, activations, and non-PyTorch components remaining fixed.
+This is best observed in figure %% add figure \ref{figure:memory-breakdown} 
+From this, we can confirm that the \texttt{gpu\_model\_utilization} parameter exclusively affects how much space is reserved for the KV cache.
+
+\subsection{Memory Split}
+\begin{comment}
+  - i think it would be cool if i could explain where the 0.3 thing comes from in terms of theory/number of blocks
+  - speak about how block size varies
+    - what determines block size
+\end{comment}
+
+Importantly, the number of available GPU memory blocks for the KV cache is influenced by model architecture, specifically the number of KV heads per layer and the total number of layers. 
+These determine how much memory is required per token to store the KV cache.
+
+\begin{equation*}
+  \text{NumKVBlocks} = \frac{\text{Mem}_{\text{KV}}}{\text{PageSize} \times \text{NumLayers}}
+\end{equation*}
+
+We can observe the effect of varying 
+
+
+
+
+\subsection{Batch Size}
+\begin{comment}
+  - 
+\end{comment}
+
+\subsection{KV Cache Eviction Policy}
+\begin{comment}
+  - explain vllm kv cache eviction policy
+  - supporting plot
 \end{comment}
 
 \chapter{Optimisation}
 \begin{comment}
-  - Detail how my optimisation works and how I evaluated it.
+  - Detail how my optimisation works and how it is implemented
+\end{comment}
+
+\chapter{Evaluation}
+\begin{comment}
+  - Evaluate optimisation...
 \end{comment}
 
 \chapter{Conclusion and Future Work}
