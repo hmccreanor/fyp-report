@@ -541,13 +541,16 @@ These investigations, and their relation to our proposed optimisation, are detai
       - the rest is allocated as kv cache memory
     - Speak about how number of available gpu blocks available is affected by number of kv heads per layers and the number of total layers
   - as we can see, varying the utilisation parameter only changes the amount of memory allocated for the kv cache 
+
+  - speak about how block size varies
+    - what determines block size
 \end{comment}
 We initially seek to better understand the memory footprint of a given model.
 By understanding this in greater detail, we can more effectively design strategies to use memory optimally.
 
 To do this, we hook into the code that vLLM uses to determine the size of a model's KV cache.
 This process involves running a dry inference pass with the maximum number of tokens the model is configured to handle in a single request.
-After this run, vLLM records the peak memory allocated by PyTorch
+After this run, vLLM records the peak memory allocated by PyTorch.
 It also records any memory allocations that occur outside of PyTorch - these may arise as result of libraries like NCCL using GPU memory for communication primitives.
 This total memory usage is then broken down into several components and used to determine the size of the KV cache.
 
@@ -557,34 +560,37 @@ Non-PyTorch memory allocations, such as those for NCCL communicators and other r
 The memory remaining after these components are accounted for is allocated for vLLM's KV cache blocks.
 
 \begin{equation*}
-  \text{Mem}_{\text{KV}} = \text{Mem}_{\text{Total}} \times \text{Utilisation} - (\text{Mem}_{\text{Activations}} + \text{Mem}_{\text{Weights}} + \text{Mem}_{\text{NonTorch}})
+  \text{Mem}_{\text{KVCache}} = \text{Mem}_{\text{Total}} \times \text{Utilisation} - (\text{Mem}_{\text{Activations}} + \text{Mem}_{\text{Weights}} + \text{Mem}_{\text{NonTorch}})
 \end{equation*}
 As a result, when we vary vLLM’s \texttt{gpu\_model\_utilization} parameter, which controls what fraction of total available memory is used for the KV cache, we observe that only the memory allocated for the KV cache changes, with the allocations for weights, activations, and non-PyTorch components remaining fixed.
 This is best observed in figure %% add figure \ref{figure:memory-breakdown} 
-From this, we can confirm that the \texttt{gpu\_model\_utilization} parameter exclusively affects how much space is reserved for the KV cache.
+From this, we can confirm that the \texttt{gpu\_model\_utilization} parameter exclusively affects how much space is reserved for the KV cache. %% is this good?
+
+\subsection{KV Cache Blocks}
+As part of its PagedAttention mechanism, vLLM breaks down the memory reserved for the KV cache into smaller segments called blocks.
+
+A block stores the KV cache entries for a fixed number of tokens.
+The size of these blocks is dictated by the architecture of the model used - specifically the number of KV heads per attention layer and the total number of these layers.
+This determines how much memory is required to store the KV cache entry for one token.
+
+\begin{equation*}
+  \text{NumKVBlocks} = \frac{\text{Mem}_{\text{KV}}}{\text{NumTokensPerBlock} \times \text{Mem}_{\text{Token}} \times \text{NumLayers}}
+\end{equation*}
+
+We can see the impact of varying \texttt{gpu\_model\_utilization} on the number of KV blocks available for both the LLM and PRM in %% add figure \ref{figure:num-blocks}
 
 \section{Memory Split}
 \begin{comment}
   - i think it would be cool if i could explain where the 0.3 thing comes from in terms of theory/number of blocks
-  - speak about how block size varies
-    - what determines block size
 \end{comment}
-
-Importantly, the number of available GPU memory blocks for the KV cache is influenced by model architecture, specifically the number of KV heads per layer and the total number of layers. 
-These determine how much memory is required per token to store the KV cache.
-
-\begin{equation*}
-  \text{NumKVBlocks} = \frac{\text{Mem}_{\text{KV}}}{\text{PageSize} \times \text{NumLayers}}
-\end{equation*}
 
 We can observe the effect of varying 
 
 
-
-
 \section{Batch Size}
 \begin{comment}
-  - 
+  - Explain how batches in vllm are broken up vis a vis pagedattention
+  - Batch size heatmap for models in isolation
 \end{comment}
 
 \section{KV Cache Eviction Policy}
