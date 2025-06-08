@@ -71,7 +71,7 @@ As such, they are likely to have made architectural decisions that limit the thr
 
 This represents an opportunity to build a new system that more effectively supports the test-time scaling use case.
 Key to these efforts is optimizing the memory of such a system, particularly the management of the key-value (KV) cache, which stores intermediate results reused during autoregressive token generation. 
-Efficient use of the KV cache can significantly improve memory utilization and computational speed.
+Efficient use of the KV cache can significantly improve memory utilisation and computational speed.
 
 This project analyses a beam search implementation built upon vLLM, a popular and widely used LLM inference library, to try and identify deficiencies that limit the effective use of GPU memory. 
 Several experiments are conducted to better understand how the implementation's performance changes as a function of various parameters and optimisations to improve GPU memory utilisation are proposed and validated. 
@@ -321,15 +321,12 @@ The KV cache blocks used by PagedAttention provide a natural mechanism through w
 Prefix caching is a technique common to many inference runtimes to avoid recomputing KV cache values across shared input prompts.
 The KV cache blocks of processed requests are cached and reused when a new request comes in with a shared prefix.
 
-\textbf{Implementation}
-vLLM introduces a KV cache manager to handle this automatic prefix caching.
-It maintains a doubly linked list of free KV cache blocks, as well as a list of currently cached KV blocks in use.
 
+To handle this automatic prefix caching, vLLM introduces a KV cache manager.
+It maintains a doubly linked list of free KV cache blocks, as well as a list of currently cached KV blocks in use.
 When a new request arrives, vLLM computes hash values for the token sequences in the request - these hashes are derived not only from the current tokens but also from the sequence of prefix tokens that precedes them. 
 If a matching hash is found, indicating that the KV cache blocks for those tokens have already been computed, they can be directly reused by the new request.
-
 In the event of a prefix cache miss, vLLM allocates new KV cache blocks by popping from the list of free blocks and populating them with the computed KV values for the unmatched prefix.
-
 If no free KV cache blocks are available, vLLM evicts blocks from the cache. 
 Eviction is done based on a least-recently-used (LRU) policy, with a preference for evicting the blocks associated with the longest prefixes first, as these are less likely to be shared by future requests.
 % diagram
@@ -350,6 +347,24 @@ Importantly, this means that a separate Python process needs to be created for e
 On individual GPU workers, a block engine is used to allocate a contiguous chunk of GPU RAM and divide it into physical KV cache blocks.
 A block manager is created to maintain the mapping between logical and physical KV blocks and this is also implemented in Python. 
 NCCL \cite{nccl} is used for communication across distributed GPU workers.
+
+\subsection{SGLang}
+SGLang is an inference runtime designed to efficiently execute LLM-centric programs that involve multiple, often dependent, generation calls interleaved with control flow and structured inputs/outputs \cite{zheng2024sglang}. 
+Unlike traditional inference engines focused solely on throughput or latency, SGLang provides a frontend programming interface and a backend runtime to optimise execution for multi-call, structured LLM workflows.
+
+At the frontend, SGLang provides a domain-specific language embedded in Python. 
+It exposes that allow users to express parallelism, control flow, and constrained generation.
+This enables modular, composable, and readable construction of LLM workflows.
+
+The backend runtime, known as SGLang Runtime (SRT), introduces three main contributions: 
+\begin{itemize}
+  \item \textbf{RadixAttention:} A mechanism for automatic KV cache reuse across multiple generation calls, using a radix tree to manage shared prompt prefixes. 
+    This dramatically reduces redundant computation and memory overhead by reusing previously computed intermediate states, unlike other existing runtimes that discard cache between calls.
+  \item \textbf{Compressed Finite State Machine (FSM):} For constrained decoding tasks, SGLang compiles regex-defined output formats into compressed FSMs. 
+    This allows multi-token decoding in a single step, bypassing the typical one-token-at-a-time bottleneck seen in standard FSM decoding engines.
+  \item \textbf{API Speculative Execution:} For black-box API-only models like GPT-4, SGLang speculatively continues generation across calls, caching potential continuations to reduce API costs and latency. 
+    This strategy effectively amortises input token cost across multiple calls.
+\end{itemize}
 
 \subsection{TensorRT-LLM}
 NVIDIA's TensorRT-LLM extends the TensorRT deep learning compiler to provide an inference runtime for LLMs \cite{nvidiainferencewhitepaper}.
@@ -381,11 +396,51 @@ This approach leverages GPU parallelism to achieve significantly higher throughp
 llama.cpp does not natively support distributed inference or multi-node serving but can be integrated with external orchestration tools \cite{ray} for these purposes.
 
 \section{Optimisations}\label{section:optimisations}
-\subsection{Sarathi-Serve}
-\subsection{PodAttention}
-\subsection{NanoFlow}
-\subsection{Prism}
+Here we detail optimisations that have been implemented on top of existing inference runtimes in order to better improve LLM inference performance.
+The optimisations here are relevant to our problem setting of a multi-model runtime,  
 
+\subsection{Sarathi-Serve}
+Sarathi-Serve addresses the throughput-latency tradeoff in LLM inference by co-optimising batching strategies for the prefill and decode phases of requests \cite{agrawal2024taming}. 
+Its two key contributions are:
+
+\begin{itemize}
+  \item \textbf{Chunked prefill kernel:} Instead of computing an entire prefill request in a single iteration, Sarathi-Serve splits it into compute-sized chunks. 
+    These chunks are co-scheduled with ongoing decodes in a way that maximises GPU compute saturation while avoiding generation stalls. 
+    This is effective because prefill is compute-bound and saturates GPU cores, while decode is memory-bound and benefits more from large batch sizes. 
+    Chunking also constrains the iteration time, helping to reduce inter-token latency.
+
+  \item \textbf{Stall-free scheduler:} This scheduler constructs hybrid batches by coalescing decode tokens with a chunked prefill request. 
+    It uses a token budget to ensure iteration latency remains bounded, and includes ongoing decodes before admitting new prefill chunks. 
+    This prevents long prefills from stalling in-progress decode requests, an issue seen in prefill-prioritising schedulers like vLLM, and leads to higher throughput and lower tail latency.
+\end{itemize}
+
+\subsection{POD-Attention}
+POD-Attention improves GPU utilisation in hybrid batches by fusing the attention kernels used for prefill and decode operations \cite{kamath2025pod}. 
+In earlier hybrid batching systems, linear layers were fused across prefill and decode tokens, but attention layers were still computed separately, using distinct kernels optimised for each phase.
+
+This separation is suboptimal for long-sequence workloads, where attention dominates compute time. 
+Prefill attention is compute-bound, while decode attention is memory-bound. 
+Computing them independently in a hybrid batch leads to resource underutilisation. 
+
+POD-Attention introduces a fused GPU kernel that computes both prefill and decode attention within the same kernel execution. 
+This kernel assigns prefill and decode CTAs to the same streaming multiprocessor using SM-aware scheduling, enabling simultaneous usage of compute and memory bandwidth. 
+As a result, POD-Attention achieves faster attention computation and improves end-to-end throughput and latency in LLM serving systems that use hybrid batching.
+
+\subsection{Prism}
+Prism considers the challenges of multi-LLM inference in environments where a single vendor serves many different models \cite{kamath2025pod}. 
+Its design is motivated by two empirical observations.
+Firstly, model popularity follows a long-tail distribution with only a select few models receiving the majority of requests and secondly, many models remain idle for long periods of time.
+Static memory partitioning across models fails to exploit these workload characteristics, resulting in poor GPU utilisation.
+
+To address this, Prism proposes two main mechanisms:
+\begin{itemize}
+  \item \textbf{KV cache virtual memory abstraction:} Prism allows models to dynamically share GPU memory by decoupling virtual and physical memory using NVIDIA's virtual memory APIs. 
+    Memory is allocated on-demand, enabling efficient re-use across models without pre-allocating static slices. 
+    This abstraction lies below the KV cache management mechanisms found in systems like vLLM, enabling cross-model memory coordination.
+
+  \item \textbf{Two-level scheduler:} Prism uses a global scheduler to place models across GPUs based on their memory demands, and a local scheduler that prioritises incoming requests by their latency service level objectives (SLOs). 
+    This two-level design enables flexible sharing of GPU memory and compute across models with varying usage patterns and requirements, leading to improved SLO attainment and cost efficiency.
+\end{itemize}
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \chapter{Ethical Issues} % 1-2 pages
@@ -526,7 +581,7 @@ To that end, we sought to answer the following questions through a series of exp
 \begin{itemize}
     \item \textbf{What are the components of the LLM and PRM's memory requirements?}
     \item \textbf{How does changing the GPU memory split between LLM and PRM impact performance?}
-    \item \textbf{What factors influence the KV cache hit rate?}
+    \item \textbf{What factors influence the KV prefix cache hit rate?}
 \end{itemize}
 These investigations, and their relation to our proposed optimisation, are detailed below.
 
@@ -655,15 +710,13 @@ Unlike traditional implementations where each request statically allocates a con
 This enables the system to fit more active sequences into memory simultaneously, increasing effective batch sizes.
 
 In the context of batched inference, we are concerned not only with how many tokens are passed to each attention kernel invocation, but also with the composition of these tokens in terms of how many distinct sequences they represent.
-Choosing larger batch sizes may improve hardware utilization, but excessively heterogeneous batches composed can potentially also introduce fragmentation if block sizes are large relative to typical sequence lengths, thus limiting efficiency.
+Choosing larger batch sizes may improve hardware utilisation, but excessively heterogeneous batches composed can potentially also introduce fragmentation if block sizes are large relative to typical sequence lengths, thus limiting efficiency.
 
 To explore this tradeoff, we varied two key parameters in vLLM’s scheduling configuration:
 
 \begin{itemize}
-  \item \texttt{max\_num\_batched\_tokens}, which sets the maximum number of input tokens passed into a single attention kernel. 
-    This directly controls the overall compute workload per kernel call.
-  \item \texttt{max\_num\_seqs}, which limits how many distinct requests can contribute tokens to that kernel. 
-    This determines the diversity and potential fragmentation of the batch.
+  \item \texttt{max\_num\_batched\_tokens}: This sets the maximum number of input tokens passed into a single attention kernel, directly controlling the overall compute workload per kernel call.
+  \item \texttt{max\_num\_seqs}: This limits how many distinct requests can contribute tokens to that kernel, thereby determining the diversity and potential fragmentation of the batch.
 \end{itemize}
 
 Figures \ref{fig:prm_batch_size_tradeoff} and \ref{fig:llm_batch_size_tradeoff} illustrate the effect of these parameters on PRM and LLM throughput, respectively. 
@@ -685,13 +738,66 @@ Figures \ref{fig:prm_batch_size_tradeoff} and \ref{fig:llm_batch_size_tradeoff} 
   \label{fig:llm_batch_size_tradeoff}
 \end{figure}
 
-\section{KV Cache}
+\section{KV Prefix Cache}
 \begin{comment}
+  - motivation
+    - batch size controls gpu saturation
+      - i.e bigger batches mean we are getting more useful output from a given kernel invocation
+    - prefix cache rate improves performance by enabling us to reuse earlier work, thus reducing recomputation
+
+  - we investigate how prefix cache hit rate varies as utilisation changes
+    - (i guess we can also investigate how this changes as batch size/composition changes??)
   - kv cache hit rate plot
   - kv cache totals plot
-  - explain vllm kv cache eviction policy
-  - supporting plot
+
+  - we observe limited variability in the kv cache hit rate as we change utilisation, showing optimal access patterns for the search and learn/prm-llm use case 
+
+  - digging into the prefix cache plots further, we check to see if any cache thrashing occurs, where we evict something that we later need
+  - we can check for this by maintaining a list of all block hashes we have seen, and modify the code that checks for prefix cache hits to also check for cases where we have a prefix cache miss but for a block hash we have seen before (meaning we have previously cached it but now evicted it)
+
+  - cache thrashing plot
+    - we see that we rarely evict a block that we later need
+
+  - conclusion, kv cache eviction policy seems well suited to our use case
+    - the reason being that we create prefix cache entries for all beams, free these when we have evaluated everything, so they can all be potentially evicted. when we then call the llm/prm again for the next set of nodes, we will get prefix cache hits for all the blocks that reuse an old beam (so we won't evict these blocks) and the blocks for beams that we no longer search through will still be free and good eviction candidates. since we never revisit an old beam, we never need these blocks again so it is okay to evict them!
+      - maybe include diagram justifying this
 \end{comment}
+Efficient use of the GPU during inference relies on two complementary strategies - maximizing compute saturation and minimizing redundant computation. 
+Batch size directly affects GPU utilisation - larger batches enable more parallelism and ensure each kernel invocation does more useful work per unit time. 
+At the same time, reducing redundant computation via KV cache reuse is critical to maintaining high throughput in tree-search systems like ours where prefix reuse is common.
+High prefix cache hit rates avoid recomputation of the tokens in these shared prefixes while freeing up compute for new inference work.
+
+To that end, we examine how prefix cache hit rates vary with different settings of \texttt{gpu\_model\_utilization}.
+
+\subsection{Cache Hit Rates}
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/kv_cache_hit_rate.pdf}
+\caption{KV prefix cache hit of both the LLM and PRM across various gpu utilisation splits.}
+\label{fig:kv_cache_hit_rate}
+\end{figure}
+
+Figure \ref{fig:kv_cache_hit_rate} shows that the prefix cache hit rate remains high across a wide range of utilisation levels, indicating stable reuse behavior despite memory pressure. 
+This suggests that the access patterns inherent in our joint LLM-PRM search space exploration are well suited to vLLM's existing eviction policy - prefixes are reused frequently and close in time to when they were first cached.
+
+\subsection{Cache Thrashing}
+To further evaluate whether the existing vLLM eviction policy causes performance regressions, we analysed cache thrashing — cases where a prefix block is evicted and later needed again, resulting in a recomputation that could have been avoided. 
+To detect this, we modified vLLM's KV cache manager code to maintain a global set of seen KV block hashes. 
+On each prefix cache miss, we check whether the block has been seen before but is no longer present in memory. 
+If so, this indicates a missed opportunity for reuse due to eviction.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/kv_thrashing_stats.pdf}
+\caption{Frequency of prefix cache thrashing events across utilisation levels.}
+\label{fig:cache_thrashing}
+\end{figure}
+
+As shown in Figure \ref{fig:cache_thrashing}, such thrashing events are extremely rare. 
+
+This confirms that vLLM's existing eviction policy is well matched to the temporal reuse patterns of our workload.
+This tightly scoped reuse window, with cache entries being reused immediately in the next search step or not at all, explains why cache thrashing is rare and why the current eviction policy performs so well. 
+Overall, our results indicate that prefix caching and memory management in our system are highly aligned with the needs of search-based multi-model inference workloads.
 
 \chapter{Optimisation}
 \begin{comment}
