@@ -26,7 +26,30 @@
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \begin{abstract}
-Your abstract.
+
+\begin{comment}
+Test-time compute scaling has emerged as a recent alternative to expensive training processes for improving LLM performance.
+Approaches in this paradigm produce chains of reasoning steps in response to a user query, often sampling multiple outputs at a time in order to explore a search space of possible answers.
+In this paper we consider beam search, a test-time compute scaling method that makes use of one model to generate reasoning steps (the LLM) and another model (the PRM) to score these steps and guide a tree search towards a response.
+Such collaborative LLM workflows are relatively unsupported and there exist substantial opportunities to optimise the performance profile of these multi-model systems.
+In particular, we explore the memory characteristics of a beam search system implemented in the popular vLLM library, seeking to analyse the memory requirements of both models, their individual optimal batching strategies as well as how overall system performance changes as the memory split between the two models varies.
+We also conduct experiments to evaluate the effectiveness of vLLM's KV cache management strategy, finding it optimal for a tree-search usage pattern.
+We use the results of these experiments to propose two system optimisations - a decode-aware speculative tree expansion that seeks to make use of differences in optimal batching strategies between the LLM and PRM to speculatively explore the reasoning search space, as well as a grid-search based approach to maximising performance in a pipelined beam search implementation.
+We implement the former and evaluate its performance relative to a baseline, demonstrating an improvement in throughput. 
+\end{comment}
+
+Test-time compute scaling has emerged as an alternative to expensive training for improving large language model (LLM) performance. 
+Methods in this paradigm generate chains of reasoning in response to a user query, often sampling multiple outputs to explore a space of possible answers. 
+This paper focuses on beam search, a test-time compute scaling approach that uses one model (the LLM) to generate reasoning steps and another (the process-reward model, or PRM) to score and guide a tree search toward a final response.
+
+Such collaborative systems are relatively underexplored, and significant opportunities remain to optimise their performance.
+We examine the memory characteristics of a beam search system implemented using the popular vLLM inference library, analysing the memory usage and batching behaviour of both models, and how system performance varies with different memory allocations between them.
+Additionally, we evaluate vLLM’s KV cache management strategy and find it well-suited to tree-search-style workloads. 
+
+Building on these insights, we propose two optimisations: (1) a decode-aware speculative tree expansion strategy that exploits differing batching preferences between the LLM and PRM, and (2) a grid search–based approach to optimise performance in a pipelined beam search system. 
+We implement and evaluate the first of these, demonstrating a measurable improvement in throughput over a baseline.
+
+
 \end{abstract}
 
 \cleardoublepage
