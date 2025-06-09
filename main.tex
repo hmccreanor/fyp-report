@@ -799,18 +799,108 @@ This confirms that vLLM's existing eviction policy is well matched to the tempor
 This tightly scoped reuse window, with cache entries being reused immediately in the next search step or not at all, explains why cache thrashing is rare and why the current eviction policy performs so well. 
 Overall, our results indicate that prefix caching and memory management in our system are highly aligned with the needs of search-based multi-model inference workloads.
 
-\chapter{Optimisation}
+\chapter{Optimisations}
 \begin{comment}
-  - Detail how my optimisation works and how it is implemented
-\end{comment}
+  - Decode-Aware Speculative Tree Expansion
+    - We try and balance the throughput between the llm and prm (where the prm has a reduced throughput) by increasing the batch size of the llm and speculatively decoding future reasoning steps 
+    - This enables us to better make use of llm throughput and potentially reduce the number of future llm invocations 
+      - This complements the decode-heavy nature of the llm 
+    - Implementation
+      - Two main points
+        - We need to modify the existing vllm sampling parameters API to introduce an \texttt{n\_stop\_occurrences} parameter
+          - the existing sampling parameters api has no support for stopping after n occurrences of a certain stop string have been seen
+            - it only supports a \texttt{stop} parameter that specifies when to stop generating a sequence
+          - we modify vllm's IncrementalDetokeniser class to store the \texttt{n\_stop\_occurrences} sampling parameter and decrement it on every occurrence of the \texttt{stop} string. we only return a stop event when this variable has been decremented down to 0
+        - we need to modify the beam search algorithm to
+          - only use the prm to score the non speculative steps decoded by the llm (i.e the steps that we were guaranteed to score at this stage of the beam search)
+          - check for cases where we have successfully speculated on the beams selected by the prm and then reinvoke the prm for these steps, saving an llm invocation and improving throughput
 
-\section{Motivation}
-\section{Design}
-\section{Implementation}
+  - Throughput min-max tuning (for this can you please just tell me whether or not throughput makes sense here and correct it throughout?)
+    - This optimisation applies to the single-gpu case, where we need to make a choice between the memory allocation between the two models
+    - Our profiling of the optimal batch sizes for llm and prm demonstrates that they have different batch scaling properties
+    - Given the data dependency between llm and prm, it makes sense to pipeline them and run them in parallel to improve throughput
+    - The throughput (or is it latency?) of a pipeline is determined by the minimum throughput (or is it latency?) of any single pipeline stage
+    - We use our profiling data to select the optimal batching strategy
+    - Implementation
+      - Requires llm and prm to run in parallel as pipeline stages
+        - Can be implemented using nvidia-cuda-mps(? maybe - I think we need this instead of/as well as python threads in order to have the gpu executing workloads for both llm and prm at the same time, instead of just sequentially)
+
+      - (Can you please generate some latex min/max or argmin/argmax formulae to formalise this as well please)
+      - We have a 2d heatmap/array of throughput/latency numbers for a selection of batch sizes and utilisations across both llm and prm
+        - each row corresponds to a given utilisation level (in isolation)
+        - each column corresponds to a particular batch size
+        - the value in each cell corresponds to a throughput/latency number 
+      - We reverse the order of the rows to reflect the fact that increasing the utilisation for one model decreases the utilisation of another
+      - we calculate a min-max value for each row as the best throughput (and the batch size that causes it) that can be achieved for a given utilisation combo
+        - we calculate it as the maximum of the elementwise minimum between the corresponding llm and prm rows
+          - this is because at a given batch size we are bottlenecked by the lower throughput model so we select the min, and then we aim to maximise system performance across batch size, so we select the row-wise maximum
+      - we then select the row that maximises this maximum throughput value, giving us the optimal system performance as well as utilisation and batch size parameters
+\end{comment}
+Here we propose two optimisations motivated by our investigations into the performance characteristics of our beam search system implemented in vLLM.
+We explain how we were able to integrate one of these optimisations into our existing test-time compute scaling implementation, before detailing and justifying another potential optimisation based on trends we observed in our investigations.  
+
+\section{Decode-Aware Speculative Tree Expansion}
+A key challenge in our setup is the mismatch in throughput between the LLM and PRM components of our pipeline. 
+While the LLM can process prompts at significantly higher throughput, the PRM is comparatively slower and often acts as the bottleneck. 
+To address this imbalance, we introduce a decode-aware speculative execution strategy that allows the LLM to speculatively decode multiple reasoning steps ahead, even before the PRM has scored all current beams.
+
+This approach enables the LLM to work with larger batch sizes and more fully utilise its decoding capacity. 
+Crucially, it also has the potential to reduce the number of future LLM invocations, which can be expensive both in terms of latency and compute. 
+The method complements the decode-heavy nature of the LLM by effectively amortising LLM work over speculative future states.
+
+\subsection{Implementation}
+Our implementation required two main modifications - one to the underlying vLLM system, and one to our beam search implementation:
+
+\begin{enumerate}
+  \item \textbf{Sampling API Extension for Controlled Speculation:} We extend the existing vLLM sampling parameters API by introducing a new parameter \texttt{n\_stop\_occurrences}. 
+    The standard API only provides a \texttt{stop} parameter, which halts generation upon the first occurrence of a stop string. 
+    However, our speculative expansion requires finer control, allowing the LLM to continue decoding until a stop string has been encountered a specified number of times.
+
+  To implement this, we modify vLLM’s \texttt{IncrementalDetokeniser} class to track and decrement a counter for \texttt{n\_stop\_occurrences}. Only when this counter reaches zero do we issue a stop signal. This allows the LLM to decode multiple reasoning steps in one go, while still providing a clear boundary for where to stop speculative decoding.
+
+  \item \textbf{PRM-Aware Beam Search Adjustments:} We adapt the beam search algorithm to only invoke the PRM on the non-speculative steps—i.e., those for which we are guaranteed to need scoring. 
+    Once the LLM has speculatively decoded future steps, we then check if any of these align with the beams selected by the PRM. 
+    If they do, we reuse the speculative outputs, avoiding redundant LLM invocations. 
+    If not, we discard the speculative paths and continue decoding as usual. This selective reuse saves computation and reduces latency without compromising the correctness of beam selection.
+\end{enumerate}
+
+\section{Throughput Min-Max Tuning}
+
+In the single-GPU setting, LLM and PRM components must share limited memory and compute resources. 
+Each model has distinct batch scaling characteristics, and allocating GPU memory to one model reduces the resources available to the other. 
+This introduces a trade-off in choosing optimal batch sizes and memory allocations. 
+
+Given the data dependency between LLM and PRM, pipelining them offers a natural solution for improved performance. 
+In a pipelined setup, the system throughput is bounded by the slowest stage, which motivates a min-max tuning strategy: we aim to select utilisation levels and batch sizes that maximise the overall throughput, given that the pipeline throughput is determined by its minimum-performing component.
+
+\subsection{Implementation}
+We formalise this optimisation using profiling data collected for various batch sizes and utilisation levels for both the LLM and PRM. Specifically:
+\begin{itemize}
+  \item We construct a two-dimensional array \( T \in \mathbb{R}^{m \times n} \), where each row corresponds to a particular GPU memory allocation (i.e., utilisation level for the LLM vs PRM), and each column corresponds to a batch size.
+  \item For each model (LLM and PRM), we obtain throughput values \( T^{\text{LLM}} \) and \( T^{\text{PRM}} \) of shape \( m \times n \).
+  \item For each utilisation level \( i \), we compute the element-wise minimum throughput across batch sizes:
+    \[
+      \text{min}_i = \min \left( T^{\text{LLM}}_{i, :},\ T^{\text{PRM}}_{i, :} \right)
+    \]
+  \item Then, we take the maximum over batch sizes for each utilisation level:
+    \[
+      \text{max}_i = \max_j \left( \text{min}_i[j] \right)
+    \]
+  \item Finally, we select the utilisation level \( i^* \) that yields the highest throughput:
+    \[
+      i^* = \arg\max_i \left( \text{max}_i \right)
+    \]
+\end{itemize}
+
+This gives us the optimal utilisation level \( i^* \) and corresponding batch size \( j^* \) to maximise pipeline throughput, respecting the throughput bottleneck imposed by the slower model.
+
+\textbf{Parallel Execution Note:} For this pipelined configuration to be effective on a single GPU, it is essential that both models can run concurrently. This is not possible with standard Python threading due to the GIL and the GPU’s default single-stream execution behaviour. We therefore rely on NVIDIA’s CUDA Multi-Process Service (MPS), which enables concurrent execution of workloads from different processes. This ensures that both LLM and PRM can make progress simultaneously, fully utilising GPU resources.
 
 \chapter{Evaluation}
 \begin{comment}
   - Evaluate optimisation...
+  - throughput
+  - accuracy
 \end{comment}
 
 \chapter{Conclusion and Future Work}
