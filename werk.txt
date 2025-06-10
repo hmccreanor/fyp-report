@@ -1,0 +1,24 @@
+specific: 
+
+  + contributions
+    - in this bit we should just explain how this optimisation would work hypothetically, and also what parts of vllm/beam search we would need to modify (design vs implementation)
+  + evaluation
+    - basically try and have a figure on how much we think we could improve this by
+  + conclusion
+
+  + related work
+    + distserve
+    + loongserve
+
+  + i actually think i should restructure this to move model memory requirements and memory split into its own section
+  + i think i then move kv prefix cache thing into optimisations and basically show that it is optimal
+
+  + look at results of batching experiment
+
+general:
+
+  + reread everything 
+  + add more detail on experiments
+  + improve figures
+  + diagrams?
+
