@@ -34,7 +34,6 @@ In this paper we consider beam search, a test-time compute scaling method that m
 Such collaborative LLM workflows are relatively unsupported and there exist substantial opportunities to optimise the performance profile of these multi-model systems.
 In particular, we explore the memory characteristics of a beam search system implemented in the popular vLLM library, seeking to analyse the memory requirements of both models, their individual optimal batching strategies as well as how overall system performance changes as the memory split between the two models varies.
 We also conduct experiments to evaluate the effectiveness of vLLM's KV cache management strategy, finding it optimal for a tree-search usage pattern.
-We use the results of these experiments to propose a decode-aware speculative tree expansion optimisation that seeks to make use of differences in optimal batching strategies between the LLM and PRM.
 \end{comment}
 
 Test-time compute scaling has emerged as an alternative to expensive training for improving large language model (LLM) performance. 
@@ -45,7 +44,7 @@ Such collaborative systems are relatively underexplored, and significant opportu
 We examine the memory characteristics of a beam search system implemented using the popular vLLM inference library, analysing the memory usage and batching behaviour of both models, and how system performance varies with different memory allocations between them.
 Additionally, we evaluate vLLM’s KV cache management strategy and find it well-suited to tree-search-style workloads. 
 
-Building on these insights, we propose a decode-aware speculative tree expansion strategy that exploits differing batching preferences between the LLM and PRM to improve system throughput.
+Building on these insights, we propose a decoupled tree exploration strategy that exploits differing batching preferences between the LLM and PRM to improve system throughput.
 We use the results of our investigations to quantify the potential benefits of such an optimisation.
 
 \end{abstract}
@@ -799,7 +798,7 @@ This confirms that vLLM's existing eviction policy is well matched to the tempor
 This tightly scoped reuse window, with cache entries being reused immediately in the next search step or not at all, explains why cache thrashing is rare and why the current eviction policy performs so well. 
 Overall, our results indicate that prefix caching and memory management in our system are highly aligned with the needs of search-based multi-model inference workloads.
 
-\chapter{Optimisations}
+\chapter{Decoupled Tree Exploration}
 \begin{comment}
   - Decode-Aware Speculative Tree Expansion
     - We try and balance the throughput between the llm and prm (where the prm has a reduced throughput) by increasing the batch size of the llm and speculatively decoding future reasoning steps 
@@ -836,23 +835,181 @@ Overall, our results indicate that prefix caching and memory management in our s
           - this is because at a given batch size we are bottlenecked by the lower throughput model so we select the min, and then we aim to maximise system performance across batch size, so we select the row-wise maximum
       - we then select the row that maximises this maximum throughput value, giving us the optimal system performance as well as utilisation and batch size parameters
 \end{comment}
-Here we propose two optimisations motivated by our investigations into the performance characteristics of our beam search system implemented in vLLM.
-We explain how we were able to integrate one of these optimisations into our existing test-time compute scaling implementation, before detailing and justifying another potential optimisation based on trends we observed in our investigations.  
+Here we explain our decoupled tree exploration optimisation.
+We detail its design, the rationale behind it and how it can be implemented into our current beam search problem setting.
 
-\section{Decode-Aware Speculative Tree Expansion}
-A key challenge in our setup is the mismatch in throughput between the LLM and PRM components of our pipeline. 
-While the LLM can process prompts at significantly higher throughput, the PRM is comparatively slower and often acts as the bottleneck. 
-To address this imbalance, we introduce a decode-aware speculative execution strategy that allows the LLM to speculatively decode multiple reasoning steps ahead, even before the PRM has scored all current beams.
+\section{Motivation}
+\begin{comment}
+plan:
+  - start by showing scaling dynamics in throughput between llm and prm
+    - show plot that shows decode throughput scales as batch size increases
+    - contrast with plot that shows prefill doesn't really increase as batch size increases
+  - show some sort of histogram to show composition of llm and prm batches
+    - ie most llm batches are comprised of prefill
+    - most llm batches are scheduling far fewer tokens than they could
 
-This approach enables the LLM to work with larger batch sizes and more fully utilise its decoding capacity. 
-Crucially, it also has the potential to reduce the number of future LLM invocations, which can be expensive both in terms of latency and compute. 
-The method complements the decode-heavy nature of the LLM by effectively amortising LLM work over speculative future states.
+  - use this to justify that we can be doing extra work with the llm 
 
-\subsection{Implementation}
-Our implementation required two main modifications - one to the underlying vLLM system, and one to our beam search implementation:
+  - explore space of potential future work
+    - could schedule more work that we know we will use
+      - benefit is that we will use it!
+      - downside is potential kv cache eviction
+      - downside is also that this then becomes a prefill step, and so we lose intertoken latency
+    - speculative work
+      - in order to speculate on future nodes, we need to at least know the current node (which we are in the process of generating) so 
+      - downside is maybe we speculate on the wrong thing and so have to throw it away
+\end{comment}
+
+
+
+\subsubsection{Exploration Strategies}
+
+\section{Design}
+\begin{comment}
+With decoupled tree exploration, we aim to take advantage of the dynamics in throughput scaling between the decode-heavy LLM and the prefill-heavy PRM in order to fill a scheduling step in the LLM with more useful work.
+In particular, because decode throughput increases with greater batch size, we increase the batch size of the LLM by packing it with tokens from other requests and, in the event that there are no other requests to process, we speculatively explore other nodes in the search tree.
+Speculative exploration enables us to include potentially useful work in a batch - if the PRM decides that a particular beam is worth exploring, then we may have already expanded this node and so have managed to avoid the overhead incurred by scheduling another kernel execution were we to expand the beams sequentially.
+
+Doing this decouples the search space exploration strategy between the LLM and PRM, with both models processing tokens for different parts of the tree at each generation step.
+This is accomplished by maintaining a queue of work for both the LLM and PRM, with each model popping off work from this queue on invocation (see \ref{alg:treesearchalgorithm}).
+
+We use a \textsc{Beam} data structure to manage the state of a beam during exploration - ensuring we can keep track of any reasoning steps that we have speculatively expanded (see \ref{alg:datastructures}).
+We do this through the use of a \texttt{last\_scored\_thought} attribute that 
+The PRM should only ever score the next thought occuring after the \texttt{last\_scored\_thought} index.
+Scoring any thoughts after this represents potentially needlessly wasted computation by the PRM: since the PRM batch size is smaller than that of the LLM and there is a data dependency from the PRM on the LLM, there always exists useful work to do by the PRM.
+We encapsulate these reasoning steps within a \textsc{Thought} data structure that store the associated PRM score of the step (see \ref{alg:datastructures}).
+
+As a result of the different batch sizes between the PRM and LLM, they each have different policies for selecting what work to include in their input batch. 
+These policies are outlined in \ref{alg:llmtreesearch} and \ref{alg:prmtreesearch}. 
+The LLM prioritises generating reasoning steps for nodes that have been recently scored and deemed to be worthwhile paths to continue exploring, before scheduling work from other waiting problems in order to fill up its input batch.
+It only speculatively explores nodes if it still cannot fill up its input batch.
+The PRM only scores the shallowest nodes in the tree - it never scores a speculatively decoded reasoning step.
+\end{comment}
+
+In decoupled tree exploration, we aim to exploit differences in throughput dynamics between the decode-bound LLM and the prefill-bound PRM. 
+The key idea is to maximise LLM utilisation during each scheduling step by filling its batch with useful work. 
+Since LLM decoding throughput improves with larger batch sizes, we increase the LLM’s batch size by packing it with tokens from multiple requests. 
+If no additional requests are available, we opportunistically expand speculative nodes in the current search tree.
+
+This speculative exploration allows the LLM to perform potentially useful computations ahead of time. 
+If the PRM later determines that a beam is worth pursuing, we may already have generated its child nodes—thereby avoiding the cost of launching another generation step. 
+This strategy effectively overlaps the LLM’s generation work with the PRM’s slower scoring, improving overall throughput.
+
+Crucially, this approach decouples the search space traversal performed by the LLM and PRM. 
+Rather than both models operating synchronously on the same node, they each work on different parts of the tree at any given generation step. 
+This is implemented by maintaining separate work queues for the LLM and PRM. Each model consumes work from its respective queue upon invocation (see Algorithm \ref{alg:treesearchalgorithm}).
+
+\begin{algorithm}[H]\label{alg:treesearchalgorithm}
+\caption{Decoupled Tree Search Algorithm} 
+\begin{algorithmic}[1]
+\State Initialise list of beams $\mathcal{B} = \{B_1, B_2, \dots, B_n\}$ with associated problems
+\State Initialise empty LLM prompt queue $\mathcal{Q}_{\text{LLM}}$
+\State Initialise empty PRM scoring queue $\mathcal{Q}_{\text{PRM}}$
+\State Set LLM and PRM batch sizes: $N_{\text{LLM}}, N_{\text{PRM}}$
+\While{any beam in $\mathcal{B}$ is active (not pruned or completed)}
+    \State \textbf{SelectLLMPrompts()}
+    \State \textbf{ProcessLLMResults()}
+    \State \textbf{SelectPRMBatch()}
+    \State \textbf{ProcessPRMResults()}
+
+    \For{each beam $B \in \mathcal{B}$}
+      \If{$B.\text{pruned}$ or $B.\text{completed}$}
+        \State Remove $B$ from $\mathcal{B}$
+      \EndIf
+    \EndFor
+\EndWhile
+\end{algorithmic}
+\end{algorithm}
+
+To track progress through the tree, we use a \textsc{Beam} data structure, which manages the state of each active beam. 
+This includes recording any reasoning steps that have been speculatively expanded by the LLM (see Algorithm \ref{alg:datastructures}). 
+Each \textsc{Beam} maintains a \texttt{last\_scored\_thought} index, indicating which thoughts have been confirmed by the PRM. 
+The PRM is only permitted to score the thought immediately following this index; scoring beyond it would represent unnecessary computation, as these thoughts may be speculative and ultimately pruned. 
+Given that the PRM’s batch size is smaller and it depends on LLM outputs, its capacity is best used on work that is guaranteed to be relevant.
+
+Individual reasoning steps are represented by the \textsc{Thought} data structure, which stores both the LLM-generated text and (optionally) the PRM-assigned score (see Algorithm \ref{alg:datastructures}).
+
+\begin{algorithm}[H]\label{alg:datastructures}
+\caption{Beam Search Data Structures}
+\begin{algorithmic}[1]
+\State \textbf{Structure} \textsc{Thought}:
+\State \hspace{0.5cm} \texttt{text}: String \Comment{The content of the thought}
+\State \hspace{0.5cm} \texttt{score}: Float or \texttt{None} \Comment{Score assigned by PRM}
+\State \hspace{0.5cm} \texttt{stop\_reason}: String or \texttt{None} \Comment{Why generation stopped, e.g., ``EOS''}
+
+\Statex
+
+\State \textbf{Structure} \textsc{Beam}:
+\State \hspace{0.5cm} \texttt{problem}: String \Comment{The original problem prompt}
+\State \hspace{0.5cm} \texttt{thoughts}: List of \textsc{Thought} \Comment{The search tree branch}
+\State \hspace{0.5cm} \texttt{last\_scored\_thought}: Integer \Comment{Index of last thought scored by PRM}
+\State \hspace{0.5cm} \texttt{pruned}: Boolean \Comment{Whether the beam has been pruned}
+\State \hspace{0.5cm} \texttt{completed}: Boolean \Comment{Whether the beam has reached a stopping condition}
+\end{algorithmic}
+\end{algorithm}
+
+Because the LLM and PRM operate under different batch size constraints, they follow distinct scheduling policies for selecting work. 
+These are detailed in Algorithms \ref{alg:llmtreesearch} and \ref{alg:prmtreesearch}. 
+The LLM prioritises expanding nodes that were recently scored and found to be promising. 
+If its batch is not full, it then considers work from other pending problems. 
+Only as a last resort does it generate speculative continuations. 
+In contrast, the PRM only scores the shallowest unscored node in each beam, and never scores speculative reasoning steps.
+
+\begin{algorithm}[H]\label{alg:llmtreesearch}
+\caption{LLM Tree Exploration Strategy}
+\begin{algorithmic}[1]
+\Statex \textbf{Select LLM Prompts:}
+\For{each beam $B \in \mathcal{B}$}
+    \If{$B.\text{pruned}$ or $B.\text{completed}$}
+        \State \textbf{continue}
+    \EndIf
+
+    \If{$B.\text{last\_scored\_thought} < |B.\text{thoughts}|$}
+        \State \textit{// PRM still catching up; wait before expanding}
+        \State \textbf{continue}
+    \EndIf
+
+    \If{beam is under-expanded (e.g., few thoughts or last thoughts are promising)}
+        \For{each recent thought $t \in \text{top-}k(B.\text{thoughts})$}
+            \State Form prompt $p = \texttt{format}(B.\text{problem}, t.\text{text})$
+            \State Add $p$ to $\mathcal{Q}_{\text{LLM}}$
+        \EndFor
+    \EndIf
+\EndFor
+\State Truncate $\mathcal{Q}_{\text{LLM}}$ to $N_{\text{LLM}}$ prompts
+\State Query LLM with $\mathcal{Q}_{\text{LLM}}$, get output thoughts $\mathcal{T}_{\text{LLM}}$ \\
+
+\Statex \textbf{Process LLM Results:}
+\For{each generated output $t_{\text{gen}} \in \mathcal{T}_{\text{LLM}}$}
+    \State Identify target beam $B$ for $t_{\text{gen}}$
+    \State Append new Thought $t$ with $t.\text{text} = t_{\text{gen}}$ to $B.\text{thoughts}$
+    \State Add $(B, t)$ to $\mathcal{Q}_{\text{PRM}}$
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[H]\label{alg:prmtreesearch}
+\caption{PRM Tree Exploration Strategy}
+\begin{algorithmic}[1]
+    \Statex \textbf{Select PRM Batch:}
+    \State Truncate $\mathcal{Q}_{\text{PRM}}$ to $N_{\text{PRM}}$ items
+    \State Query PRM with $\mathcal{Q}_{\text{PRM}}$, get scored thoughts $\mathcal{T}_{\text{PRM}}$ \\
+    \Statex \textbf{Process PRM Results:}
+    \For{each scored tuple $(B, t, s) \in \mathcal{T}_{\text{PRM}}$}
+        \State Set $t.\text{score} \gets s$
+        \State Increment $B.\text{last\_scored\_thought}$
+        \State Remove $(B, t)$ from $\mathcal{Q}_{\text{PRM}}$
+    \EndFor
+\end{algorithmic}
+\end{algorithm}
+
+\begin{comment}
+\section{Implementation}
+Our implementation requires two main modifications - one to the underlying vLLM system, and one to our beam search implementation:
 
 \begin{enumerate}
-  \item \textbf{Sampling API Extension for Controlled Speculation:} We extend the existing vLLM sampling parameters API by introducing a new parameter \texttt{n\_stop\_occurrences}. 
+  \item \textbf{Sampling API Extension for Controlled Speculation:} 
+    We extend the existing vLLM sampling parameters API by introducing a new parameter \texttt{n\_stop\_occurrences}. 
     The standard API only provides a \texttt{stop} parameter, which halts generation upon the first occurrence of a stop string. 
     However, our speculative expansion requires finer control, allowing the LLM to continue decoding until a stop string has been encountered a specified number of times.
 
@@ -863,38 +1020,7 @@ Our implementation required two main modifications - one to the underlying vLLM 
     If they do, we reuse the speculative outputs, avoiding redundant LLM invocations. 
     If not, we discard the speculative paths and continue decoding as usual. This selective reuse saves computation and reduces latency without compromising the correctness of beam selection.
 \end{enumerate}
-
-\section{Throughput Min-Max Tuning}
-
-In the single-GPU setting, LLM and PRM components must share limited memory and compute resources. 
-Each model has distinct batch scaling characteristics, and allocating GPU memory to one model reduces the resources available to the other. 
-This introduces a trade-off in choosing optimal batch sizes and memory allocations. 
-
-Given the data dependency between LLM and PRM, pipelining them offers a natural solution for improved performance. 
-In a pipelined setup, the system throughput is bounded by the slowest stage, which motivates a min-max tuning strategy: we aim to select utilisation levels and batch sizes that maximise the overall throughput, given that the pipeline throughput is determined by its minimum-performing component.
-
-\subsection{Implementation}
-We formalise this optimisation using profiling data collected for various batch sizes and utilisation levels for both the LLM and PRM. Specifically:
-\begin{itemize}
-  \item We construct a two-dimensional array \( T \in \mathbb{R}^{m \times n} \), where each row corresponds to a particular GPU memory allocation (i.e., utilisation level for the LLM vs PRM), and each column corresponds to a batch size.
-  \item For each model (LLM and PRM), we obtain throughput values \( T^{\text{LLM}} \) and \( T^{\text{PRM}} \) of shape \( m \times n \).
-  \item For each utilisation level \( i \), we compute the element-wise minimum throughput across batch sizes:
-    \[
-      \text{min}_i = \min \left( T^{\text{LLM}}_{i, :},\ T^{\text{PRM}}_{i, :} \right)
-    \]
-  \item Then, we take the maximum over batch sizes for each utilisation level:
-    \[
-      \text{max}_i = \max_j \left( \text{min}_i[j] \right)
-    \]
-  \item Finally, we select the utilisation level \( i^* \) that yields the highest throughput:
-    \[
-      i^* = \arg\max_i \left( \text{max}_i \right)
-    \]
-\end{itemize}
-
-This gives us the optimal utilisation level \( i^* \) and corresponding batch size \( j^* \) to maximise pipeline throughput, respecting the throughput bottleneck imposed by the slower model.
-
-\textbf{Parallel Execution Note:} For this pipelined configuration to be effective on a single GPU, it is essential that both models can run concurrently. This is not possible with standard Python threading due to the GIL and the GPU’s default single-stream execution behaviour. We therefore rely on NVIDIA’s CUDA Multi-Process Service (MPS), which enables concurrent execution of workloads from different processes. This ensures that both LLM and PRM can make progress simultaneously, fully utilising GPU resources.
+\end{comment}
 
 \chapter{Evaluation}
 \begin{comment}
