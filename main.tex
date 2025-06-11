@@ -1,5 +1,6 @@
 \documentclass[11pt,twoside]{report}
 
+
 % some definitions for the title page
 \newcommand{\reporttitle}{A New Scalable Runtime for LLM Inference}
 \newcommand{\reportauthor}{Hamish McCreanor}
@@ -799,70 +800,108 @@ This tightly scoped reuse window, with cache entries being reused immediately in
 Overall, our results indicate that prefix caching and memory management in our system are highly aligned with the needs of search-based multi-model inference workloads.
 
 \chapter{Decoupled Tree Exploration}
-\begin{comment}
-  - Decode-Aware Speculative Tree Expansion
-    - We try and balance the throughput between the llm and prm (where the prm has a reduced throughput) by increasing the batch size of the llm and speculatively decoding future reasoning steps 
-    - This enables us to better make use of llm throughput and potentially reduce the number of future llm invocations 
-      - This complements the decode-heavy nature of the llm 
-    - Implementation
-      - Two main points
-        - We need to modify the existing vllm sampling parameters API to introduce an \texttt{n\_stop\_occurrences} parameter
-          - the existing sampling parameters api has no support for stopping after n occurrences of a certain stop string have been seen
-            - it only supports a \texttt{stop} parameter that specifies when to stop generating a sequence
-          - we modify vllm's IncrementalDetokeniser class to store the \texttt{n\_stop\_occurrences} sampling parameter and decrement it on every occurrence of the \texttt{stop} string. we only return a stop event when this variable has been decremented down to 0
-        - we need to modify the beam search algorithm to
-          - only use the prm to score the non speculative steps decoded by the llm (i.e the steps that we were guaranteed to score at this stage of the beam search)
-          - check for cases where we have successfully speculated on the beams selected by the prm and then reinvoke the prm for these steps, saving an llm invocation and improving throughput
-
-  - Throughput min-max tuning (for this can you please just tell me whether or not throughput makes sense here and correct it throughout?)
-    - This optimisation applies to the single-gpu case, where we need to make a choice between the memory allocation between the two models
-    - Our profiling of the optimal batch sizes for llm and prm demonstrates that they have different batch scaling properties
-    - Given the data dependency between llm and prm, it makes sense to pipeline them and run them in parallel to improve throughput
-    - The throughput (or is it latency?) of a pipeline is determined by the minimum throughput (or is it latency?) of any single pipeline stage
-    - We use our profiling data to select the optimal batching strategy
-    - Implementation
-      - Requires llm and prm to run in parallel as pipeline stages
-        - Can be implemented using nvidia-cuda-mps(? maybe - I think we need this instead of/as well as python threads in order to have the gpu executing workloads for both llm and prm at the same time, instead of just sequentially)
-
-      - (Can you please generate some latex min/max or argmin/argmax formulae to formalise this as well please)
-      - We have a 2d heatmap/array of throughput/latency numbers for a selection of batch sizes and utilisations across both llm and prm
-        - each row corresponds to a given utilisation level (in isolation)
-        - each column corresponds to a particular batch size
-        - the value in each cell corresponds to a throughput/latency number 
-      - We reverse the order of the rows to reflect the fact that increasing the utilisation for one model decreases the utilisation of another
-      - we calculate a min-max value for each row as the best throughput (and the batch size that causes it) that can be achieved for a given utilisation combo
-        - we calculate it as the maximum of the elementwise minimum between the corresponding llm and prm rows
-          - this is because at a given batch size we are bottlenecked by the lower throughput model so we select the min, and then we aim to maximise system performance across batch size, so we select the row-wise maximum
-      - we then select the row that maximises this maximum throughput value, giving us the optimal system performance as well as utilisation and batch size parameters
-\end{comment}
 Here we explain our decoupled tree exploration optimisation.
 We detail its design, the rationale behind it and how it can be implemented into our current beam search problem setting.
 
 \section{Motivation}
-\begin{comment}
-plan:
-  - start by showing scaling dynamics in throughput between llm and prm
-    - show plot that shows decode throughput scales as batch size increases
-    - contrast with plot that shows prefill doesn't really increase as batch size increases
-  - show some sort of histogram to show composition of llm and prm batches
-    - ie most llm batches are comprised of prefill
-    - most llm batches are scheduling far fewer tokens than they could
+Modern LLM systems exhibit markedly different scaling behaviours across the prefill and decode stages. 
+Prefill stages are largely compute-bound, driven by intensive matrix multiplications that fully utilise GPU arithmetic units. 
+In contrast, decode stages, where only a single token is processed at a time, rarely saturate GPU compute capacity. 
+Instead, the bottleneck shifts to memory bandwidth, as KV cache entries must be fetched and updated token by token. 
+This fundamental discrepancy leads to divergent scaling dynamics and motivates different batching strategies for each phase.
 
-  - use this to justify that we can be doing extra work with the llm 
+To understand how these dynamics play out in practice, we analyse the composition of LLM and PRM workloads and experimentally validate the scaling behaviour of each model in isolation. 
+Existing work has shown that decode throughput can be substantially improved by increasing batch size \cite{agrawal2024taming}, and we test whether this applies in our setting.
 
-  - explore space of potential future work
-    - could schedule more work that we know we will use
-      - benefit is that we will use it!
-      - downside is potential kv cache eviction
-      - downside is also that this then becomes a prefill step, and so we lose intertoken latency
-    - speculative work
-      - in order to speculate on future nodes, we need to at least know the current node (which we are in the process of generating) so 
-      - downside is maybe we speculate on the wrong thing and so have to throw it away
-\end{comment}
+We begin by examining how many tokens are scheduled per request in LLM and PRM batches. 
+To do this, we run a standard beam search workflow and record the token composition of each batch issued by the scheduler — the component responsible for determining how many tokens each request should generate. 
+We then construct a histogram showing the number of tokens scheduled per request (see Figure \ref{fig:batch-hist-comparison}). 
+For the LLM, this histogram reveals a sharp long tail of requests scheduling only a single token, which is typical of decode steps. 
+Conversely, the PRM shows a more evenly distributed mix of token lengths, with many requests scheduling more than one token, but fewer concentrated at exactly one. This suggests partial or complete prefill.
 
+\begin{figure}[htbp]
+\centering
+\subfigure[Histogram of number of tokens scheduled per request within an LLM batch.]{
+\includegraphics[width=\textwidth]{figures/LLM_tokens_scheduled_hist.png}
+\label{fig:batch-hist-llm}
+}
+\vspace{1em}
+\subfigure[Histogram of number of tokens scheduled per request within a PRM batch.]{
+\includegraphics[width=\textwidth]{figures/PRM_tokens_scheduled_hist.png}
+\label{fig:batch-hist-prm}
+}
+\caption{LLM batches are predominantly decode-oriented, as shown by the high frequency of 1-token requests. PRM batches exhibit a broader distribution due to their prefill-heavy workload.}
+\label{fig:batch-hist-comparison}
+\end{figure}
 
+With this in mind, we isolate each model to explore how their throughput responds to increasing batch sizes. 
+We vary the \texttt{max\_num\_batched\_tokens} parameter in vLLM, which controls the upper bound of tokens scheduled in a batch. 
+To ensure realistic inputs, we replay prompts and responses from a previous beam search run. 
+These are then fed in bulk to vLLM's generate() API, guaranteeing that the scheduler has ample tokens available to fill batches up to the configured maximum. 
+Throughput is then measured in both prompts per second and tokens per second.
 
-\subsubsection{Exploration Strategies}
+\begin{figure}[htbp]
+\centering
+\subfigure[The impact of varying LLM batch size on throughput.]{
+\includegraphics[width=0.45\textwidth]{figures/llm_throughput_graph.png}
+\label{fig:llm_throughput_with_batch_size}
+}
+\hfill
+\subfigure[The impact of varying PRM batch size on throughput.]{
+\includegraphics[width=0.45\textwidth]{figures/prm_throughput_graph.png}
+\label{fig:prm_throughput_with_batch_size}
+}
+\caption{LLM throughput scales with batch size due to memory-bound decode efficiency. PRM throughput plateaus, constrained by the compute-bound prefill workload.}
+\label{fig:prm_throughput_vs_llm_throughput}
+\end{figure}
+
+As expected, we observe a sharp increase in throughput (see Figure \ref{fig:prm_throughput_vs_llm_throughput}) for the LLM as batch size increases, confirming that decode efficiency improves with parallelism. 
+In contrast, the PRM's throughput shows early saturation, with limited gains beyond a moderate batch size. 
+This reinforces the idea that aggressively batching LLM decode tokens is a promising path to improved performance. 
+The case strengthens further when we profile batch utilisation in a real workflow and observe that the LLM frequently submits under-filled batches.
+
+\begin{figure}[htbp]
+\centering
+\subfigure[Batch utilisation histogram for LLM]{
+\includegraphics[width=\textwidth]{figures/LLM_batch_utilisation.pdf}
+\label{fig:batch-util-llm}
+}
+\vspace{1em}
+\subfigure[Batch utilisation histogram for PRM]{
+\includegraphics[width=\textwidth]{figures/PRM_batch_utilisation.pdf}
+\label{fig:batch-util-prm}
+}
+\caption{LLM batch utilisation is frequently suboptimal, with many invocations well below the scheduler’s maximum capacity.}
+\label{fig:batch-utilisation-comparison}
+\end{figure}
+
+Additionally, many LLM decode batches are under-filled - that is, they schedule far fewer tokens than the model could process in a single step. 
+This underutilisation reflects a tight coupling between the LLM and PRM, where the LLM can only generate tokens once the PRM has fully evaluated and selected nodes. 
+This introduces serial bottlenecks and leaves LLM compute capacity idle.
+
+These observations motivate a decoupled search strategy, where the LLM and PRM operate semi-independently. 
+Rather than waiting for the PRM to determine which nodes to expand next, the LLM can opportunistically generate additional tokens — either for unexplored nodes within the same problem or from unrelated queued requests. 
+This allows us to improve LLM throughput by better saturating batches, even if some of the work may later be discarded.
+
+Two strategies emerge:
+\begin{itemize}
+  \item \textbf{Eager Scheduling:} The LLM proactively generates tokens for nodes that we are certain will be used later, such as expansions from other active requests in the queue. 
+    The key benefit is that all generated tokens are guaranteed to be useful. 
+    However, there are trade-offs. 
+    Prefill may be required for unrelated requests, and prefill is significantly more expensive than decode. 
+    In addition, different problems are unlikely to share KV cache blocks, so this can increase cache contention and lead to unnecessary evictions.
+  \item \textbf{Speculative Expansion:} Here, the LLM begins generating tokens for nodes that have not yet been selected by the PRM. 
+    If the PRM later chooses to expand these nodes, we avoid latency by reusing work already done. 
+    This allows us to increase current LLM batch size and potentially improve throughput. 
+    However, speculative work carries the risk of being wasted if the PRM selects a different path, and it may increase memory pressure due to added cache entries.
+\end{itemize}
+
+In both cases, increased KV cache fragmentation and pressure may become limiting factors. 
+Since prefill-heavy speculative generations may evict high-value decode paths, understanding the runtime impact on the KV cache remains an important area for future profiling and optimisation.
+
+In summary, the mismatch in prefill and decode scaling, combined with frequent underutilisation of LLM batches, highlights a missed opportunity in tightly coupled LLM–PRM workflows. 
+Decoupling the LLM from the PRM allows the LLM to independently explore alternative nodes, whether by speculating within the same search tree or by pulling in work from other queued problems. 
+This decoupling means that the LLM and PRM no longer operate on the exact same nodes at each step, enabling better batch saturation and throughput, and reducing end-to-end latency — even if it comes at the cost of some wasted computation or cache pressure.
 
 \section{Design}
 \begin{comment}

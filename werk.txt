@@ -1,14 +1,14 @@
 specific: 
 
-  + contributions
+  + contributions (1hr)
     - in this bit we should just explain how this optimisation would work hypothetically, and also what parts of vllm/beam search we would need to modify (design vs implementation)
     + motivation
     x design
-  + evaluation
+  + evaluation (1hr)
     - basically try and have a figure on how much we think we could improve this by
-  + conclusion
+  + conclusion (1hr)
 
-  + related work
+  + related work (1hr)
     + distserve
     + loongserve
 
@@ -17,8 +17,8 @@ specific:
 
   x look at results of batching experiment
 
-  + add pseudocode to explain how we checked for cache thrashing
-  + fix pseudocode for tree search
+  + add pseudocode to explain how we checked for cache thrashing (1hr)
+  + fix pseudocode for tree search (30mins)
 
 general:
 
