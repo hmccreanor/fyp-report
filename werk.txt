@@ -1,12 +1,5 @@
 specific: 
-  x evaluation (1hr)
-    - basically try and have a figure on how much we think we could improve this by
-    + i think somewhere i need to basically specify how i think the memory should be split with our new optimisation
-      
-    - i think we try and quantify the underutilisation in the llm somehow
-  + conclusion (1hr)
-
-  + improve introduction section! (1hr)
+  x improve introduction section! (1hr)
   + reread everything (1hr)
 
   + try and restructure figures so they flow nicer with the rest of the paper (1hr)
@@ -14,6 +7,7 @@ specific:
   - (1hr)
     + add more detail on experiments 
     + at the end of each related work - basically just speak about how it is related to what i am doing
+
 
   + improve figures
   + diagrams?
@@ -23,5 +17,5 @@ specific:
   - somewhere i need to specify that we consider the single gpu case only
     - problem setting probably
 
-  + peak about long running steps and how we have to wait for a single reasoning step to be expanded before completing the .generate call
+  + speak about long running steps and how we have to wait for a single reasoning step to be expanded before completing the .generate call
   + graphs for evaluation section

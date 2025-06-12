@@ -1,4 +1,4 @@
-\documentclass[11pt,twoside]{report}
+\documentclass[12pt,twoside]{report}
 
 
 % some definitions for the title page
@@ -27,19 +27,9 @@
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \begin{abstract}
-
-\begin{comment}
-Test-time compute scaling has emerged as a recent alternative to expensive training processes for improving LLM performance.
-Approaches in this paradigm produce chains of reasoning steps in response to a user query, often sampling multiple outputs at a time in order to explore a search space of possible answers.
-In this paper we consider beam search, a test-time compute scaling method that makes use of one model to generate reasoning steps (the LLM) and another model (the PRM) to score these steps and guide a tree search towards a response.
-Such collaborative LLM workflows are relatively unsupported and there exist substantial opportunities to optimise the performance profile of these multi-model systems.
-In particular, we explore the memory characteristics of a beam search system implemented in the popular vLLM library, seeking to analyse the memory requirements of both models, their individual optimal batching strategies as well as how overall system performance changes as the memory split between the two models varies.
-We also conduct experiments to evaluate the effectiveness of vLLM's KV cache management strategy, finding it optimal for a tree-search usage pattern.
-\end{comment}
-
 Test-time compute scaling has emerged as an alternative to expensive training for improving large language model (LLM) performance. 
 Methods in this paradigm generate chains of reasoning in response to a user query, often sampling multiple outputs to explore a space of possible answers. 
-This paper focuses on beam search, a test-time compute scaling approach that uses one model (the LLM) to generate reasoning steps and another (the process-reward model, or PRM) to score and guide a tree search toward a final response.
+This paper focuses on beam search, a test-time compute scaling approach that uses one model (the LLM) to generate reasoning steps and another (the process reward model, or PRM) to score and guide a tree search toward a final response.
 
 Such collaborative systems are relatively underexplored, and significant opportunities remain to optimise their performance.
 We examine the memory characteristics of a beam search system implemented using the popular vLLM inference library, analysing the memory usage and batching behaviour of both models, and how system performance varies with different memory allocations between them.
@@ -77,9 +67,6 @@ Finally, I wish to thank my flatmates, Adam Maltby, Cameron Fraser, and Om Singh
 % Why is it interesting?
 % How do I propose to solve it?
 \begin{comment}
-  
-\end{comment}
-
 As large language models (LLMs) are adopted for an ever-growing range of applications, scaling time spent in training has emerged as the dominant paradigm for improving model performance.
 However, with training costs growing prohibitively expensive, there is increasing interest in other techniques for bettering model output. 
 Test-time compute scaling offers one such way to improve performance, with existing models achieving better results by ``thinking'' for longer.
@@ -96,8 +83,46 @@ Efficient use of the KV cache can significantly improve memory utilisation and c
 
 This project analyses a beam search implementation built upon vLLM, a popular and widely used LLM inference library, to try and identify deficiencies that limit the effective use of GPU memory. 
 Several experiments are conducted to better understand how the implementation's performance changes as a function of various parameters and optimisations to improve GPU memory utilisation are proposed and validated. 
+\end{comment}
 
-%%%% Add bit here explaining what optimisations I tried
+Over the past few years, large language models (LLMs) have shown remarkable performance across a wide range of tasks, from code generation to mathematical reasoning to dialogue systems.
+Much of this progress has been driven by scaling up training: using larger datasets, more compute, and larger model architectures.
+This trend is empirically supported by several scaling laws, which show that model performance improves predictably with additional training compute and data \cite{kaplan2020scaling}.
+However, this approach comes at a high cost.
+Training large models from scratch requires enormous energy, specialised hardware infrastructure, and weeks or months of compute time.
+This cost makes it difficult for all but the largest institutions to train state-of-the-art models, and raises concerns about the environmental and financial sustainability of further scaling.
+As the benefits of scaling begin to plateau, and training costs continue to rise, there is growing interest in alternative ways to improve model performance without retraining.
+
+Test-time compute scaling offers one such alternative.
+Instead of investing additional compute during training, test-time scaling methods invest compute at inference time - allowing the model to ``think'' for longer in order to produce higher quality responses.
+This approach maintains the same underlying model weights, and as such requires no additional training, but instead varies the inference strategy used to generate outputs.
+There are several strategies in this paradigm.
+Chain-of-thought prompting encourages models to reason through intermediate steps before answering a question.
+Self-consistency improves this by sampling multiple reasoning paths and using majority vote over final answers.
+Best-of-N sampling uses a verifier model to score multiple LLM outputs and select the most promising one.
+Beam search extends this idea by maintaining a pool of candidate reasoning paths and expanding them iteratively, using a reward model to guide the search.
+In each of these approaches, extra compute is used to generate or score more candidate outputs - potentially improving quality without retraining.
+
+This project focuses on the beam search setting, where one model (referred to as the LLM) proposes reasoning steps and another model (referred to as the process reward model, or PRM) scores them.
+Beam search proceeds by maintaining a fixed number of active reasoning paths, called ``beams'', expanding them with new reasoning steps generated by the LLM, and using the PRM to score and prune the pool of candidates.
+
+This setting poses new systems challenges, with most existing inference systems assuming that only one model is active at a time.
+They are not optimised to support two models sharing memory and compute with different execution profiles.
+The generator LLM is decode-heavy - it autoregressively generates reasoning steps token by token and its overall throughput is strongly influenced by input batch size.
+Conversely, the PRM is prefill-heavy - it processes entire input prompts and emits just one output token, often featuring a heavier compute load per request.
+This asymmetry creates bottlenecks when both models run on the same hardware.
+We use the `Search and Learn' open-source project \cite{beeching2024scalingtesttimecompute} as a reference implementation of these techniques and treat it as a starting point for future optimisation and investigation.
+The project uses the vLLM runtime \cite{kwon2023efficient} to serve and coordinate the models used by beam search.  
+
+The goal of this project is to explore how systems-level optimisations and scheduling strategies can improve throughput in collaborative inference workloads involving an LLM and a PRM.
+We consider the performance characteristics of vLLM and make two primary contributions.
+Firstly, we investigate the memory dynamics of vLLM’s key-value (KV) prefix cache, focusing on its eviction policy and its suitability for tree-search workloads with high prefix reuse.
+We measure cache hit rates and recomputation frequency, and find that vLLM’s existing eviction strategy performs well in this setting.
+Secondly, we propose a new decoupled tree exploration strategy that separates the execution of the LLM and PRM to better exploit their respective throughput characteristics.
+By profiling the system, we show that the LLM is often underutilised and that its throughput increases with input batch size.
+Our proposed approach allows the LLM to perform speculative or eager expansions independently, helping to increase batch utilisation and overall throughput.
+We evaluate this strategy by estimating potential gains under realistic assumptions, and discuss key trade-offs and system effects that could limit its effectiveness.
+
 
 %%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -1140,7 +1165,7 @@ In particular, we observed consistently high prefix cache hit rates and very low
 
 Our second contribution was to propose a new decoupled tree exploration strategy for beam search that aims to address a throughput bottleneck in decode-heavy LLM workloads.
 We profiled the system and observed that the LLM spends much of its time in the decode phase, where GPU throughput is heavily dependent on input batch size.
-We found that LLM decode batches are frequently underutilised — often falling well below the scheduler's maximum batch size — and that LLM throughput increases substantially with batch size.
+We found that LLM decode batches are frequently underutilised - often falling well below the scheduler's maximum batch size - and that LLM throughput increases substantially with batch size.
 This motivates our decoupling strategy, where the LLM and PRM explore different parts of the search tree independently, allowing the LLM to opportunistically expand nodes ahead of PRM scoring to better fill its batch.
 We then evaluated this strategy by estimating its potential to improve LLM throughput via increased batch utilisation and amortised kernel overhead.
 We also considered a range of complicating factors that may reduce realised performance, including cache pressure, hybrid batch latency, and trade-offs between speculative and eager expansions.
