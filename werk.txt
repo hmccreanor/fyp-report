@@ -1,24 +1,25 @@
 specific: 
   + evaluation (1hr)
     - basically try and have a figure on how much we think we could improve this by
+    + i think somewhere i need to basically specify how i think the memory should be split with our new optimisation
+      
+    - i think we try and quantify the underutilisation in the llm somehow
   + conclusion (1hr)
 
-  x related work (1hr)
-    x distserve
+  + improve introduction section! (1hr)
+  + reread everything (1hr)
 
-  + whatever this stuff is (1hr)
-    + i actually think i should restructure this to move model memory requirements and memory split into its own section or just part of problem setting
-    + i think i then move kv prefix cache thing into optimisations and basically show that it is optimal
+  + try and restructure figures so they flow nicer with the rest of the paper (1hr)
 
-    + add pseudocode to explain how we checked for cache thrashing 
-    + fix pseudocode for tree search 
+  - (1hr)
+    + add more detail on experiments 
+    + at the end of each related work - basically just speak about how it is related to what i am doing
 
-general (tomorrow morning):
-  + improve introduction section!
-  + reread everything 
-  + add more detail on experiments
-  + at the end of each related work - basically just speak about how it is related to what i am doing
-
-general (tomorrow):
   + improve figures
   + diagrams?
+    + beam search
+
+  - somewhere i need to specify that we consider the single gpu case only
+    - problem setting probably
+
+  + peak about long running steps and how we have to wait for a single reasoning step to be expanded before completing the .generate call

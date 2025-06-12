@@ -60,7 +60,7 @@ Finally, I wish to thank my flatmates, Adam Maltby, Cameron Fraser, and Om Singh
 %\clearpage{\pagestyle{empty}\cleardoublepage}
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%--- table of contents
+%- table of contents
 \fancyhead[RE,LO]{\sffamily {Table of Contents}}
 \tableofcontents 
 
@@ -574,45 +574,17 @@ We run the original `Search and Learn` system on the MATH dataset to establish a
 If it has, we can conclude with some degree of confidence that our optimisations have not altered the core behaviour of the system as it pertains to output content.
 Notably, we do not compare outputs directly between systems, as the inherent non-determinism in vLLM, due to factors such as sampling temperature, makes meaningful per-token comparisons impossible.
 
-\chapter{Investigations}
-\begin{comment}
-  - I think this should kind of be structured as a series of questions and answers where I sort of go "here's a hypothesis, here is how I tested it and these are the results".
-
-  - Maybe start by detailing broad questions and then how I drilled down into answering them?
-
-  - Questions I sought to investigate
-    - What factors influence kv cache hit rate?
-      - How does eviction policy impact performance?
-    - How does changing the memory split between llm and prm impact performance
-    - What are the memory requirements for both the llm and prm
-      - This is the work I did regarding memory breakdown
-\end{comment}
-
+\chapter{Preliminary Investigations}
 This project seeks to understand what throughput improvements to a beam search system are possible by optimising memory footprint.
 This encompasses both inter-model memory considerations, like the split of memory between models, as well as intra-model considerations, like how a model's KV cache is managed.
-To that end, we sought to answer the following questions through a series of experiments and investigations:
+To that end, we sought to answer the following preliminary questions through a series of experiments and investigations in order to better understand key aspects of vLLM's memory management policy.
 \begin{itemize}
     \item \textbf{What are the components of the LLM and PRM's memory requirements?}
     \item \textbf{How does changing the GPU memory split between LLM and PRM impact performance?}
-    \item \textbf{What factors influence the KV prefix cache hit rate?}
 \end{itemize}
 These investigations, and their relation to our proposed optimisation, are detailed below.
 
 \section{Model Memory Requirements}
-\begin{comment}
-  - Need to understand memory breakdown in order to better understand how it is allocated/what can be moved around
-  - do this by hooking into vLLM's memory allocation code
-    - explain how this works
-      - runs a dry run with maximum number of tokens
-      - sees peak allocated memory by torch, as well as non-torch allocated memory
-      - breaks this down into model weights, activations (we assume), non-torch allocated memory (nccl communicators etc. )
-      - the rest is allocated as kv cache memory
-    - Speak about how number of available gpu blocks available is affected by number of kv heads per layers and the number of total layers
-  - as we can see, varying the utilisation parameter only changes the amount of memory allocated for the kv cache 
-
-  - speak about how block size varies
-    - what determines block size
-\end{comment}
 We initially seek to better understand the memory footprint of a given model.
 By understanding this in greater detail, we can more effectively design strategies to use memory optimally.
 
@@ -704,54 +676,7 @@ When the PRM is allocated less KV cache memory, it holds fewer KV cache blocks a
   \label{fig:prm_block_usage_high}
 \end{figure}
 
-
-\section{Batch Size}
-\begin{comment}
-  - motivation
-    - different models may require different batch sizes to achieve optimal throughput
-      - we want to ensure equal throughput between models
-  - Explain how batches in vllm are broken up vis a vis pagedattention
-    - because we don't overallocate kv cache, we can fit the kv cache for more requests into memory at one time 
-    - we care about the number of tokens we pass into a kernel, and also what the composition of these tokens are in terms of requests
-  - Batch size heatmap for models in isolation
-\end{comment}
-
-In order to achieve optimal system performance, we sought to balance the throughput between the LLM and PRM in order to avoid one particular model becoming a bottleneck.
-This requires tuning the batching parameters of both models individually.
-
-Unlike traditional implementations where each request statically allocates a contiguous chunk of KV cache memory based on the maximum size of a potential request, vLLM avoids overallocation through its use of PagedAttention, passing only the KV values necessary for the given input tokens.
-This enables the system to fit more active sequences into memory simultaneously, increasing effective batch sizes.
-
-In the context of batched inference, we are concerned not only with how many tokens are passed to each attention kernel invocation, but also with the composition of these tokens in terms of how many distinct sequences they represent.
-Choosing larger batch sizes may improve hardware utilisation, but excessively heterogeneous batches composed can potentially also introduce fragmentation if block sizes are large relative to typical sequence lengths, thus limiting efficiency.
-
-To explore this tradeoff, we varied two key parameters in vLLM’s scheduling configuration:
-
-\begin{itemize}
-  \item \texttt{max\_num\_batched\_tokens}: This sets the maximum number of input tokens passed into a single attention kernel, directly controlling the overall compute workload per kernel call.
-  \item \texttt{max\_num\_seqs}: This limits how many distinct requests can contribute tokens to that kernel, thereby determining the diversity and potential fragmentation of the batch.
-\end{itemize}
-
-Figures \ref{fig:prm_batch_size_tradeoff} and \ref{fig:llm_batch_size_tradeoff} illustrate the effect of these parameters on PRM and LLM throughput, respectively. 
-
-
-%%%%%%% INCLUDE A CONCLUSION OF SOME SORT HERE WHEN I HAVE BETTER RESULTS!!
-
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=\textwidth]{figures/prm_batch_size_tradeoff.png}
-  \caption{Analysing the effect of varying \texttt{max\_num\_seqs} and \texttt{max\_num\_batched\_tokens} on PRM throughput.}
-  \label{fig:prm_batch_size_tradeoff}
-\end{figure}
-
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=\textwidth]{figures/llm_batch_size_tradeoff.png}
-  \caption{Analysing the effect of varying \texttt{max\_num\_seqs} and \texttt{max\_num\_batched\_tokens} on LLM throughput.}
-  \label{fig:llm_batch_size_tradeoff}
-\end{figure}
-
-\section{KV Prefix Cache}
+\chapter{KV Prefix Caching Strategy}
 \begin{comment}
   - motivation
     - batch size controls gpu saturation
@@ -782,7 +707,7 @@ High prefix cache hit rates avoid recomputation of the tokens in these shared pr
 
 To that end, we examine how prefix cache hit rates vary with different settings of \texttt{gpu\_model\_utilization}.
 
-\subsection{Cache Hit Rates}
+\section{Cache Hit Rates}
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=\textwidth]{figures/kv_cache_hit_rate.pdf}
@@ -793,9 +718,30 @@ To that end, we examine how prefix cache hit rates vary with different settings 
 Figure \ref{fig:kv_cache_hit_rate} shows that the prefix cache hit rate remains high across a wide range of utilisation levels, indicating stable reuse behavior despite memory pressure. 
 This suggests that the access patterns inherent in our joint LLM-PRM search space exploration are well suited to vLLM's existing eviction policy - prefixes are reused frequently and close in time to when they were first cached.
 
-\subsection{Cache Thrashing}
+\section{Cache Thrashing}
 To further evaluate whether the existing vLLM eviction policy causes performance regressions, we analysed cache thrashing - cases where a prefix block is evicted and later needed again, resulting in a recomputation that could have been avoided. 
-To detect this, we modified vLLM's KV cache manager code to maintain a global set of seen KV block hashes. 
+To detect this, we modified vLLM's KV cache manager code (see Algorithm \ref{alg:cachethrashingdetection}) to maintain a global set of seen KV block hashes. 
+
+\begin{algorithm}[H]\label{alg:cachethrashingdetection}
+\caption{Detecting Cache Thrashing in vLLM}
+\begin{algorithmic}[1]
+\State \textbf{Global variables:}
+\State \quad \texttt{SeenBlocks} $\gets$ empty hash set
+\State \quad \texttt{CacheBlocks} $\gets$ hash set of KV blocks currently in GPU memory
+\State \quad \texttt{ThrashCount} $\gets$ 0
+\Function{ProcessBlock}{\texttt{block\_hash}}
+  \If{\texttt{block\_hash} $\notin$ \texttt{SeenBlocks}}
+    \State \texttt{SeenBlocks.add(block\_hash)} \Comment{First time seeing this block}
+  \Else
+    \If{\texttt{block\_hash} $\notin$ \texttt{CacheBlocks}}
+      \State \texttt{ThrashCount} $\gets$ \texttt{ThrashCount} + 1 \Comment{Block was evicted and reused}
+    \EndIf
+  \EndIf
+  \State \texttt{CacheBlocks.add(block\_hash)} \Comment{Mark block as active in cache}
+\EndFunction
+\end{algorithmic}
+\end{algorithm}
+
 On each prefix cache miss, we check whether the block has been seen before but is no longer present in memory. 
 If so, this indicates a missed opportunity for reuse due to eviction.
 
@@ -955,14 +901,18 @@ This is implemented by maintaining separate work queues for the LLM and PRM. Eac
 \caption{Decoupled Tree Search Algorithm} 
 \begin{algorithmic}[1]
 \State Initialise list of beams $\mathcal{B} = \{B_1, B_2, \dots, B_n\}$ with associated problems
+\State Initialise empty request queue $\mathcal{Q}_{\text{Req}}$
 \State Initialise empty LLM prompt queue $\mathcal{Q}_{\text{LLM}}$
 \State Initialise empty PRM scoring queue $\mathcal{Q}_{\text{PRM}}$
 \State Set LLM and PRM batch sizes: $N_{\text{LLM}}, N_{\text{PRM}}$
 \While{any beam in $\mathcal{B}$ is active (not pruned or completed)}
     \State \textbf{SelectLLMPrompts()}
+    \State \textbf{GenerateLLMOutputs()}
     \State \textbf{ProcessLLMResults()}
     \State \textbf{SelectPRMBatch()}
+    \State \textbf{GeneratePRMOutputs()}
     \State \textbf{ProcessPRMResults()}
+    \State \textbf{PruneBeamsUsingScores()}
 
     \For{each beam $B \in \mathcal{B}$}
       \If{$B.\text{pruned}$ or $B.\text{completed}$}
@@ -1011,32 +961,40 @@ In contrast, the PRM only scores the shallowest unscored node in each beam, and 
 \caption{LLM Tree Exploration Strategy}
 \begin{algorithmic}[1]
 \Statex \textbf{Select LLM Prompts:}
-\For{each beam $B \in \mathcal{B}$}
-    \If{$B.\text{pruned}$ or $B.\text{completed}$}
-        \State \textbf{continue}
-    \EndIf
+\State $\mathcal{Q}_{\text{LLM}} \gets [\,]$
 
-    \If{$B.\text{last\_scored\_thought} < |B.\text{thoughts}|$}
-        \State \textit{// PRM still catching up; wait before expanding}
-        \State \textbf{continue}
-    \EndIf
 
-    \If{beam is under-expanded (e.g., few thoughts or last thoughts are promising)}
-        \For{each recent thought $t \in \text{top-}k(B.\text{thoughts})$}
-            \State Form prompt $p = \texttt{format}(B.\text{problem}, t.\text{text})$
-            \State Add $p$ to $\mathcal{Q}_{\text{LLM}}$
-        \EndFor
-    \EndIf
+\For{each beam $B \in \mathcal{B}$} \Comment{Process currently running beams first}
+  \If{$B.\text{last\_scored\_thought} < |B.\text{thoughts}|$}
+      \State \textit{// PRM still catching up; wait before expanding}
+      \State \textbf{continue}
+  \EndIf
+
+  \State Select most recent thought $t$
+  \State Generate prompt for expanding $t$, append to $\mathcal{Q}_{\text{LLM}}$
 \EndFor
-\State Truncate $\mathcal{Q}_{\text{LLM}}$ to $N_{\text{LLM}}$ prompts
-\State Query LLM with $\mathcal{Q}_{\text{LLM}}$, get output thoughts $\mathcal{T}_{\text{LLM}}$ \\
 
-\Statex \textbf{Process LLM Results:}
-\For{each generated output $t_{\text{gen}} \in \mathcal{T}_{\text{LLM}}$}
-    \State Identify target beam $B$ for $t_{\text{gen}}$
-    \State Append new Thought $t$ with $t.\text{text} = t_{\text{gen}}$ to $B.\text{thoughts}$
-    \State Add $(B, t)$ to $\mathcal{Q}_{\text{PRM}}$
-\EndFor
+\If{$|\mathcal{Q}_{\text{LLM}}| < N_{\text{LLM}}$}
+    \For{each request $R \in \mathcal{Q}_{\text{Req}}$} \Comment{Fill up batch with tokens from other queued requests first}
+      \State Generate beam $B$ for request and append to $\mathcal{B}$
+      \State Generate initial prompt for empty beam $B$, append to  $\mathcal{Q}_{\text{LLM}}$
+      \If{$|\mathcal{Q}_{\text{LLM}}| = N_{\text{LLM}}$}
+          \State \textbf{break}
+      \EndIf
+    \EndFor
+\EndIf
+
+\If{$|\mathcal{Q}_{\text{LLM}}| < N_{\text{LLM}}$}
+    \For{each beam $B \in \mathcal{B}$} \Comment{If batch size is still too small, speculatively decode new reasoning steps}
+        \If{$B$ is not pruned or completed}
+            \State Select speculative thought $t$ from $B$
+            \State Generate prompt to expand $t$, append to $\mathcal{Q}_{\text{LLM}}$
+            \If{$|\mathcal{Q}_{\text{LLM}}| = N_{\text{LLM}}$}
+                \State \textbf{break}
+            \EndIf
+        \EndIf
+    \EndFor
+\EndIf
 \end{algorithmic}
 \end{algorithm}
 
@@ -1055,36 +1013,132 @@ In contrast, the PRM only scores the shallowest unscored node in each beam, and 
 \end{algorithmic}
 \end{algorithm}
 
-\begin{comment}
-\section{Implementation}
-Our implementation requires two main modifications - one to the underlying vLLM system, and one to our beam search implementation:
-
-\begin{enumerate}
-  \item \textbf{Sampling API Extension for Controlled Speculation:} 
-    We extend the existing vLLM sampling parameters API by introducing a new parameter \texttt{n\_stop\_occurrences}. 
-    The standard API only provides a \texttt{stop} parameter, which halts generation upon the first occurrence of a stop string. 
-    However, our speculative expansion requires finer control, allowing the LLM to continue decoding until a stop string has been encountered a specified number of times.
-
-  To implement this, we modify vLLM’s \texttt{IncrementalDetokeniser} class to track and decrement a counter for \texttt{n\_stop\_occurrences}. Only when this counter reaches zero do we issue a stop signal. This allows the LLM to decode multiple reasoning steps in one go, while still providing a clear boundary for where to stop speculative decoding.
-
-  \item \textbf{PRM-Aware Beam Search Adjustments:} We adapt the beam search algorithm to only invoke the PRM on the non-speculative steps-i.e., those for which we are guaranteed to need scoring. 
-    Once the LLM has speculatively decoded future steps, we then check if any of these align with the beams selected by the PRM. 
-    If they do, we reuse the speculative outputs, avoiding redundant LLM invocations. 
-    If not, we discard the speculative paths and continue decoding as usual. This selective reuse saves computation and reduces latency without compromising the correctness of beam selection.
-\end{enumerate}
-\end{comment}
-
 \chapter{Evaluation}
 \begin{comment}
-  - Evaluate optimisation...
-  - throughput
-  - accuracy
+  - bit at the start
+    - we evaluate our decoupled tree exploration strategy with respect to our baseline metrics and aim to establish an estimate of how much it could improve throughput
+  - potential performance improvement 
+    - estimate number of requests we could potentially add to the batch
+    - estimate number of beams we could speculatively expand
+    - these two can give us an estimate of how the throughput could increase
+      - however we also need to consider what percentage of speculative tokens will actually turn out to be useful
+
+    - speak about how this improves llm throughput, but in a single GPU system, we are still bottlenecked by prm throughput
+
+  - complicating factors
+    - batch composition
+      - if we are adding in prompts from other requests we will need to execute prefill on these, changes the composition of the batch and leads to greater inter token latency
+        - graph showing latency of requests containing prefills vs decode only requests
+    - kv cache pressure
+      - graph showing num blocks used as a function of max_num_seqs?
+        - we should hopefully see that as we add more more max num seqs the number of blocks increases - potentially leading to eviction that we saw earlier that degraded throughput
+    - speculation hit rate
+      - kind of hard to evaluate as it depends on how many things we are speculating for
+        - if we pack our batch full of more speculation then we are more likely to get a hit
+  - also comment on scheduling complexity
+    - should basically be minimal given that gpu kernel invocations dominate (get some figures for this - maybe the stuff guo had)
+      - basically profile time spent in different parts of the overall cycle
 \end{comment}
+\section{Evaluation}
+
+We now present a prospective evaluation of our decoupled tree exploration strategy. 
+Since we have not yet implemented the full optimisation, our aim here is to estimate its potential impact on throughput and system efficiency, based on measured characteristics of LLM and PRM behaviour and architectural constraints.
+
+\subsection{Estimating Potential Gains}
+
+Our strategy is motivated by a key mismatch: decode-heavy LLMs scale well with batch size, while prefill-heavy PRMs quickly saturate. 
+Empirical profiling (see figures \ref{fig:prm_throughput_vs_llm_throughput} and \ref{fig:batch-utilisation-comparison}) confirms that the LLM is frequently underutilised due to tight coupling with the PRM. 
+Decoupling allows the LLM to perform additional useful or potentially useful work by filling out its batch with:
+\begin{itemize}
+  \item Tokens from unrelated pending requests (eager scheduling)
+  \item Speculative expansions of beams not yet selected by the PRM
+\end{itemize}
+
+We can estimate the theoretical gains in two ways:
+
+\paragraph{Batch Size and LLM Throughput}
+
+By adding speculative or eager tokens to the LLM batch, we aim to increase the number of tokens processed per invocation. 
+Since decode throughput scales with batch size (Figure \ref{fig:llm_throughput_with_batch_size}), this improves GPU utilisation and reduces per-token latency. 
+For example, if the current average LLM batch utilisation is 10\% (defined as the number of scheduled tokens divided by the batch’s maximum capacity), and we increase this to 40\% through speculative expansions, then LLM throughput could increase by up to 4$\times$ under ideal conditions.
+
+\paragraph{Amortising Kernel Overhead via Speculation}
+
+In standard beam search, every reasoning step must be decoded by a dedicated LLM kernel invocation. 
+With our decoupled strategy, speculative or eagerly scheduled steps may be generated ahead of time and reused later - avoiding the need to schedule a new LLM invocation for them. 
+This amortises kernel launch overhead across more tokens and reduces the number of kernel executions required for the same amount of useful output. 
+The extent of this benefit depends on the the proportion of speculatively generated reasoning steps that are ultimately retained by the PRM - the speculation hit rate. 
+For instance, if 50\% of speculative work is reused, we could cut the number of LLM invocations by up to half.
+
+\vspace{0.5em}
+Together, these effects, better batch utilisation and amortised kernel scheduling, suggest that decoupled tree exploration could significantly improve LLM throughput. 
+However, as we discuss below, these gains are constrained by batch composition, cache behaviour and speculative hit rates.
+
+\subsection{Practical Constraints and Trade-offs}
+
+\paragraph{Batch Composition}
+
+Packing unrelated requests into the same batch improves LLM utilisation, but it also changes batch characteristics. 
+Decode-only batches are fast and memory-efficient while introducing new prompts requires prefill, which is slower and more memory intensive. 
+We expect increased inter-token latency and degraded throughput in hybrid batches \ref{agrawal2024taming}. 
+
+% plot goes here showing latency between decode only and hybrid batches
+
+\begin{comment}
+A future experiment could compare LLM latency across:
+\begin{itemize}
+  \item Pure decode batches
+  \item Batches with queued prefill requests
+  \item Batches with intra-tree speculative expansions
+\end{itemize}
+\end{comment}
+
+\paragraph{Speculation Hit Rate}
+
+The effectiveness of speculative decoding depends on the speculation hit rate - the fraction of speculative reasoning steps that are ultimately reused by the PRM.  
+Higher hit rates allow more speculative work to be retained, reducing wasted compute and improving overall efficiency.  
+However, the hit rate is not fixed - it varies with both beam search configuration and batch composition strategy.
+
+In particular, hit rate increases with beam width.  
+When more beams are kept alive after PRM scoring, there is a greater chance that at least one of the speculatively expanded nodes belongs to a retained path.  
+This makes broader beam search more amenable to speculative decoding.
+
+Hit rate is also influenced by how much of the LLM batch is devoted to speculative expansions versus eager scheduling.  
+Eager expansions - tokens generated for queued requests we know will be used - always represent useful computation, but they reduce the number of speculative expansions that can be included in a batch.  
+This in turn lowers the overall probability of a speculative hit, since fewer speculative candidates are attempted.
+
+There is therefore a trade-off between guaranteed utility, through eager scheduling, and potential future reuse, through speculation.  
+This trade-off is complicated further by the impact of batch composition on LLM latency.  
+Decode-only batches, for example speculative continuations from the same search tree, tend to execute faster than hybrid batches that include new prefill prompts from unrelated problems.  
+As a result, aggressively increasing eager work may reduce speculation hit rate and increase batch latency, undermining the gains from either strategy.
+
+Quantifying this trade-off requires careful profiling of batch composition, token latency, and reuse rates.  
+Future work could explore adaptive scheduling policies that dynamically balance speculation and eagerness based on runtime conditions.
+
+\paragraph{KV Cache Pressure}
+Speculative expansions and prefill introduce additional sequence entries into the KV cache. 
+This increases memory pressure and may reduce the number of requests the system can handle concurrently. 
+Specifically, prefill work for unrelated prompts is unlikely to reuse cache blocks significantly, increasing the number of KV cache blocks actively in use. 
+Further, speculative tree expansions grow the depth of the beam search tree, again allocating more KV cache blocks.
+In the event of high contention for the KV cache, blocks may be evicted, leading to recomputation of KV cache entries and reducing throughput.
+
+%% graph showing num blocks used as a function of max_num_seqs?
+%% we should hopefully see that as we add more more max num seqs the number of blocks increases - potentially leading to eviction that we saw earlier that degraded throughput
+
+\subsection{Scheduling Complexity}
+Despite adding speculative work, the core scheduling mechanism remains simple. 
+LLM and PRM still run sequentially, and each model draws from its own work queue. 
+Because GPU kernel execution dominates runtime, the marginal cost of maintaining these queues or performing beam bookkeeping (for example, managing the last \texttt{last\_scored\_thought} variable when determining PRM batch contents) is likely negligible. 
+
+%%% graph goes here with guo's time breakdown thingy
 
 \chapter{Conclusion and Future Work}
 \begin{comment}
   - Keep this short and just summarise key findings and elaborate on future optimisations/research directions.
 \end{comment}
+
+\section{Future Work}
+\subsection{Pipelined Architecture}
 
 
 %% bibliography
@@ -1121,3 +1175,4 @@ As a proof-of-concept, the project’s impact is likely to be gradual and limite
 
 
 \end{document}
+
