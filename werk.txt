@@ -1,5 +1,5 @@
 specific: 
-  + evaluation (1hr)
+  x evaluation (1hr)
     - basically try and have a figure on how much we think we could improve this by
     + i think somewhere i need to basically specify how i think the memory should be split with our new optimisation
       
@@ -18,8 +18,10 @@ specific:
   + improve figures
   + diagrams?
     + beam search
+    + speculative expansion
 
   - somewhere i need to specify that we consider the single gpu case only
     - problem setting probably
 
   + peak about long running steps and how we have to wait for a single reasoning step to be expanded before completing the .generate call
+  + graphs for evaluation section

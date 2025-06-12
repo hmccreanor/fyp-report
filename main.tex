@@ -1132,14 +1132,48 @@ Because GPU kernel execution dominates runtime, the marginal cost of maintaining
 
 %%% graph goes here with guo's time breakdown thingy
 
-\chapter{Conclusion and Future Work}
-\begin{comment}
-  - Keep this short and just summarise key findings and elaborate on future optimisations/research directions.
-\end{comment}
+\chapter{Conclusion}
+This project investigated how inference runtimes can better support test-time compute scaling strategies featuring collaborative LLM use, with a particular focus on beam search.
+Our first contribution was an investigation into vLLM’s KV cache eviction policy and its suitability for collaborative inference workloads.
+Through experiments measuring cache hit rates and thrashing behaviour, we found that vLLM’s LRU-based cache eviction strategy is well-matched to the temporal reuse patterns of search-based workloads.
+In particular, we observed consistently high prefix cache hit rates and very low rates of avoidable recomputation, suggesting that the eviction policy is broadly optimal for this setting.
+
+Our second contribution was to propose a new decoupled tree exploration strategy for beam search that aims to address a throughput bottleneck in decode-heavy LLM workloads.
+We profiled the system and observed that the LLM spends much of its time in the decode phase, where GPU throughput is heavily dependent on input batch size.
+We found that LLM decode batches are frequently underutilised — often falling well below the scheduler's maximum batch size — and that LLM throughput increases substantially with batch size.
+This motivates our decoupling strategy, where the LLM and PRM explore different parts of the search tree independently, allowing the LLM to opportunistically expand nodes ahead of PRM scoring to better fill its batch.
+We then evaluated this strategy by estimating its potential to improve LLM throughput via increased batch utilisation and amortised kernel overhead.
+We also considered a range of complicating factors that may reduce realised performance, including cache pressure, hybrid batch latency, and trade-offs between speculative and eager expansions.
 
 \section{Future Work}
-\subsection{Pipelined Architecture}
+Several avenues remain for future exploration.
+We detail these and their implications below.
 
+\subsection{Implementation}
+First, a natural next step is to implement and benchmark a full version of our decoupled tree exploration scheduler.
+This would allow us to move beyond theoretical analysis and quantify the practical throughput gains that can be realised under realistic workloads.
+It would also enable a more detailed evaluation of system-level effects such as cache pressure, latency variability, and scheduler overhead, which are difficult to fully capture through the isolated experiments that we used to reason about performance.
+Furthermore, a working implementation would allow us to experiment with different batching and queueing policies, which could be tuned to further improve LLM throughput.
+
+\subsection{Pipelining}
+Second, while our current implementation preserves the sequential execution of the LLM and PRM, further throughput improvements may be possible by pipelining their execution.
+A pipelined architecture would allow both models to operate concurrently, increasing hardware parallelism and improving resource utilisation.
+However, this also introduces new challenges.
+The main challenge in a pipelined architecture involves balancing the throughput between different pipeline stages.
+In our case, this would likely require a rebalancing of resources between the LLM and PRM, or even the instantiation of multiple copies of one model to match throughput across pipeline stages.
+For example, since the PRM's throughput is typically lower than that of the LLM, we may wish to run employ model parallelism, running multiple PRMs in parallel to avoid this stage becoming a bottleneck.
+
+\subsection{Comparing Speculative and Eager Node Expansions}
+Third, we believe more work is needed to better understand the dynamics between speculative and eager expansions.
+While speculative decoding can increase batch utilisation and reduce kernel launch overhead, it comes at the cost of potentially wasted compute and cache pressure.
+Conversely, eager expansions are always useful but involve more expensive prefill steps and increase KV cache pressure.
+
+A key direction for future research is to explore adaptive scheduling policies that dynamically balance these two modes of expansion based on runtime conditions.
+These policies could consider metrics such as LLM batch utilisation, KV cache occupancy, or queueing delays in order to make informed tradeoffs.
+
+Finally, this work highlights a broader need to rethink inference system design in the context of test-time compute scaling.
+The inference runtimes that currently exist are modelled around running a single LLM and do not consider the interaction between multiple models with asymmetric performance characteristics.
+As LLM workflows increasingly involve chains of generation, verification, and scoring, the development of new runtimes that can coordinate these components efficiently represents an important research direction.
 
 %% bibliography
 \bibliographystyle{vancouver}
