@@ -463,6 +463,19 @@ To address this, Prism proposes two main mechanisms:
     This two-level design enables flexible sharing of GPU memory and compute across models with varying usage patterns and requirements, leading to improved SLO attainment and cost efficiency.
 \end{itemize}
 
+\subsection{DistServe}
+DistServe reconsiders the design of distributed LLM inference systems by decoupling the compute-heavy prefill phase from the latency-sensitive decode phase \cite{zhang2024distserve}.
+DistServe contends that these two phases exhibit fundamentally different performance characteristics, and treating them symmetrically, as is common in existing systems, leads to significant inefficiencies.
+
+In particular, DistServe measures two key metrics: Time-to-First-Token (TTFT), which reflects the latency of prefill, and Tokens-Per-Output-Time (TPOT), which measures decode throughput.
+The paper empirically shows that prefill is a high-throughput, parallel-friendly operation that dominates TTFT, while decode is inherently sequential and much lighter in terms of compute but latency-critical.
+Moreover, prefill benefits from batching and scales efficiently across GPUs, whereas decode does not scale well with distributed compute and suffers under batching due to sequential dependencies.
+
+Based on these observations, DistServe proposes a disaggregated architecture that assigns prefill and decode to different GPU worker pools, with dedicated batching strategies for each.
+This separation not only leads to improved performance on both metrics but also enables better resource provisioning by isolating compute-bound and latency-bound operations.
+
+By quantifying the prefill–decode disparity in terms of TTFT and TPOT, DistServe promotes a disaggregated architecture that optimises the prefill and decode phases individually, instead of considering them jointly.
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \chapter{Problem Setting and System Description}
 \begin{comment}
@@ -781,7 +794,7 @@ Figure \ref{fig:kv_cache_hit_rate} shows that the prefix cache hit rate remains 
 This suggests that the access patterns inherent in our joint LLM-PRM search space exploration are well suited to vLLM's existing eviction policy - prefixes are reused frequently and close in time to when they were first cached.
 
 \subsection{Cache Thrashing}
-To further evaluate whether the existing vLLM eviction policy causes performance regressions, we analysed cache thrashing — cases where a prefix block is evicted and later needed again, resulting in a recomputation that could have been avoided. 
+To further evaluate whether the existing vLLM eviction policy causes performance regressions, we analysed cache thrashing - cases where a prefix block is evicted and later needed again, resulting in a recomputation that could have been avoided. 
 To detect this, we modified vLLM's KV cache manager code to maintain a global set of seen KV block hashes. 
 On each prefix cache miss, we check whether the block has been seen before but is no longer present in memory. 
 If so, this indicates a missed opportunity for reuse due to eviction.
@@ -814,7 +827,7 @@ To understand how these dynamics play out in practice, we analyse the compositio
 Existing work has shown that decode throughput can be substantially improved by increasing batch size \cite{agrawal2024taming}, and we test whether this applies in our setting.
 
 We begin by examining how many tokens are scheduled per request in LLM and PRM batches. 
-To do this, we run a standard beam search workflow and record the token composition of each batch issued by the scheduler — the component responsible for determining how many tokens each request should generate. 
+To do this, we run a standard beam search workflow and record the token composition of each batch issued by the scheduler - the component responsible for determining how many tokens each request should generate. 
 We then construct a histogram showing the number of tokens scheduled per request (see Figure \ref{fig:batch-hist-comparison}). 
 For the LLM, this histogram reveals a sharp long tail of requests scheduling only a single token, which is typical of decode steps. 
 Conversely, the PRM shows a more evenly distributed mix of token lengths, with many requests scheduling more than one token, but fewer concentrated at exactly one. This suggests partial or complete prefill.
@@ -880,7 +893,7 @@ This underutilisation reflects a tight coupling between the LLM and PRM, where t
 This introduces serial bottlenecks and leaves LLM compute capacity idle.
 
 These observations motivate a decoupled search strategy, where the LLM and PRM operate semi-independently. 
-Rather than waiting for the PRM to determine which nodes to expand next, the LLM can opportunistically generate additional tokens — either for unexplored nodes within the same problem or from unrelated queued requests. 
+Rather than waiting for the PRM to determine which nodes to expand next, the LLM can opportunistically generate additional tokens - either for unexplored nodes within the same problem or from unrelated queued requests. 
 This allows us to improve LLM throughput by better saturating batches, even if some of the work may later be discarded.
 
 Two strategies emerge:
@@ -901,7 +914,7 @@ Since prefill-heavy speculative generations may evict high-value decode paths, u
 
 In summary, the mismatch in prefill and decode scaling, combined with frequent underutilisation of LLM batches, highlights a missed opportunity in tightly coupled LLM–PRM workflows. 
 Decoupling the LLM from the PRM allows the LLM to independently explore alternative nodes, whether by speculating within the same search tree or by pulling in work from other queued problems. 
-This decoupling means that the LLM and PRM no longer operate on the exact same nodes at each step, enabling better batch saturation and throughput, and reducing end-to-end latency — even if it comes at the cost of some wasted computation or cache pressure.
+This decoupling means that the LLM and PRM no longer operate on the exact same nodes at each step, enabling better batch saturation and throughput, and reducing end-to-end latency - even if it comes at the cost of some wasted computation or cache pressure.
 
 \section{Design}
 \begin{comment}
@@ -931,7 +944,7 @@ Since LLM decoding throughput improves with larger batch sizes, we increase the 
 If no additional requests are available, we opportunistically expand speculative nodes in the current search tree.
 
 This speculative exploration allows the LLM to perform potentially useful computations ahead of time. 
-If the PRM later determines that a beam is worth pursuing, we may already have generated its child nodes—thereby avoiding the cost of launching another generation step. 
+If the PRM later determines that a beam is worth pursuing, we may already have generated its child nodes-thereby avoiding the cost of launching another generation step. 
 This strategy effectively overlaps the LLM’s generation work with the PRM’s slower scoring, improving overall throughput.
 
 Crucially, this approach decouples the search space traversal performed by the LLM and PRM. 
@@ -1054,7 +1067,7 @@ Our implementation requires two main modifications - one to the underlying vLLM 
 
   To implement this, we modify vLLM’s \texttt{IncrementalDetokeniser} class to track and decrement a counter for \texttt{n\_stop\_occurrences}. Only when this counter reaches zero do we issue a stop signal. This allows the LLM to decode multiple reasoning steps in one go, while still providing a clear boundary for where to stop speculative decoding.
 
-  \item \textbf{PRM-Aware Beam Search Adjustments:} We adapt the beam search algorithm to only invoke the PRM on the non-speculative steps—i.e., those for which we are guaranteed to need scoring. 
+  \item \textbf{PRM-Aware Beam Search Adjustments:} We adapt the beam search algorithm to only invoke the PRM on the non-speculative steps-i.e., those for which we are guaranteed to need scoring. 
     Once the LLM has speculatively decoded future steps, we then check if any of these align with the beams selected by the PRM. 
     If they do, we reuse the speculative outputs, avoiding redundant LLM invocations. 
     If not, we discard the speculative paths and continue decoding as usual. This selective reuse saves computation and reduces latency without compromising the correctness of beam selection.
