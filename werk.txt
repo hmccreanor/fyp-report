@@ -1,21 +1,11 @@
-specific: 
-  x improve introduction section! (1hr)
-  + reread everything (1hr)
++ reread everything (1hr)
+  + add more detail on experiments 
+  + at the end of each related work - basically just speak about how it is related to what i am doing 
 
-  + try and restructure figures so they flow nicer with the rest of the paper (1hr)
-
-  - (1hr)
-    + add more detail on experiments 
-    + at the end of each related work - basically just speak about how it is related to what i am doing
-
-
-  + improve figures
-  + diagrams?
-    + beam search
-    + speculative expansion
-
-  - somewhere i need to specify that we consider the single gpu case only
-    - problem setting probably
-
-  + speak about long running steps and how we have to wait for a single reasoning step to be expanded before completing the .generate call
-  + graphs for evaluation section
+fuck this i don't have time:
++ graph showing num blocks used as a function of max_num_seqs?
+  - I think just get two plots with max_num_seqs
++ graph goes here with guo's time breakdown thingy
+  - i guess just overall time minus generate?
++ improve figures?
++ prefix caching diagram

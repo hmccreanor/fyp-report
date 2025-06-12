@@ -244,7 +244,7 @@ Tensors like weights and the KV cache are typically stored in HBM and then moved
 In addition to GPUs, other hardware platforms like ASICs, FPGAs and TPUs exist and can be used to further accelerate the operations of LLMs \cite{li2024large}.
 These platforms tend to be more heterogenous in architecture and, as such, most existing LLM runtimes (see \ref{chapter:relatedwork}) tend to be optimised for a GPU-like architecture.
 
-\subsection{Distributed Computation}
+\subsection{Distributed Computation}\label{subsection:distributedcomputation}
 One approach to scaling LLMs to is to distribute computation amongst multiple GPUs. 
 Model data can be shared across multiple nodes in a network to increase inference throughput, while model layers and even individual tensors can be sharded to enable the deployment of larger models.
 These techniques need not be used in isolation and are frequently used in combination in existing training and inference pipelines \cite{kwon2023efficient} \cite{shoeybi2019megatron} \cite{yu2022orca}.
@@ -329,10 +329,14 @@ All of these $N \times M$ new reasoning steps are scored and the top $N$ steps a
 Implementations of beam search frequently use a Process Reward Model (PRM) to score the intermediate reasoning steps. 
 PRMs differ from the verifier models used in best-of-n search in that they are trained to output a score for every reasoning step, rather than just the final result.
 
-%% Include a diagram of some sort
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{figures/beam_search_example.png}
+  \caption{An example run of the beam search algorithm with $N = 2$ and $M = 4$. An LLM is used to generate new chains of reasoning which are then scored by the PRM. These scores are used to inform what reasoning chains are explored.}
+  \label{fig:beamsearch}
+\end{figure}
 
 \chapter{Related Work}\label{chapter:relatedwork}
-% speak about different runtimes and their contributions
 Various runtimes for performing LLM inference already exist.
 These implement some of the techniques described earlier in order to provide efficient inference for a variety of use cases.
 In order to understand where it might be possible to offer a novel contribution with regard to performance, we first need to understand the features offered by existing solutions.
@@ -375,8 +379,6 @@ If a matching hash is found, indicating that the KV cache blocks for those token
 In the event of a prefix cache miss, vLLM allocates new KV cache blocks by popping from the list of free blocks and populating them with the computed KV values for the unmatched prefix.
 If no free KV cache blocks are available, vLLM evicts blocks from the cache. 
 Eviction is done based on a least-recently-used (LRU) policy, with a preference for evicting the blocks associated with the longest prefixes first, as these are less likely to be shared by future requests.
-% diagram
-
 
 \subsubsection{Architecture}
 vLLM exposes a Python library and an OpenAI API \cite{openaiapi} compatible web server for inference.
@@ -555,6 +557,13 @@ Namely we use a beam width of four and set a maximum tree depth of 40.
 % Maybe this bit is weak - could take out since they can always look at the search and learn benchmark
 % actually could always just add these two sentences to the evaluation metric section
 
+\subsection{Hardware}
+While many parallelism strategies exist that take advantage of multiple GPUs (see Section \ref{subsection:distributedcomputation}), we only consider the single GPU case.
+This is done to isolate the performance characteristics of vLLM and to ensure that observed effects can be attributed to runtime-level behaviour rather than complexities associated with multi-GPU coordination.
+Multi-GPU deployments introduce additional variables such as communication latency and memory sharding, which can potentially obscure the impact of scheduling and cache management policies.
+By limiting the problem to a single GPU node, we are able to evaluate cache dynamics, memory pressure, and batching effects in a more controlled and reproducible setting.
+This is a fair constraint as it also reflects a common deployment scenario for many real-world systems that must operate within a fixed memory and compute budget.
+
 \section{Modifications}
 To ensure a reasonable baseline from which to evaluate performance, several changes were made to the `Search and Learn` reference code.
 These represent simple optimisations to correct obvious performance deficiencies in the original codebase and were implemented by several members of Imperial College London's Large-Scale Data and Systems Group.
@@ -628,10 +637,27 @@ The memory remaining after these components are accounted for is allocated for v
   \text{Mem}_{\text{KVCache}} = \text{Mem}_{\text{Total}} \times \text{Utilisation} - (\text{Mem}_{\text{Activations}} + \text{Mem}_{\text{Weights}} + \text{Mem}_{\text{NonTorch}})
 \end{equation*}
 As a result, when we vary vLLM’s \texttt{gpu\_model\_utilization} parameter, which controls what fraction of total available memory is used for the KV cache, we observe that only the memory allocated for the KV cache changes, with the allocations for weights, activations, and non-PyTorch components remaining fixed.
-This is best observed in figure %% add figure \ref{figure:memory-breakdown} 
+This is best observed in Figure \ref{fig:memory_breakdown}. 
 From this, we can confirm that the \texttt{gpu\_model\_utilization} parameter exclusively affects how much space is reserved for the KV cache. %% is this good?
 
-%%% explain difficulty whereby vLLM does not profile memory for llm and prm in isolation (reason prm is set to 0.9 utilisation)
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{figures/memory_utilisation_breakdown.pdf}
+  \caption{Impact on KV Cache memory when \texttt{gpu\_model\_utilization} is varied.}
+  \label{fig:memory_breakdown}
+\end{figure}
+
+While investigating the memory requirements of the LLM and PRM under vLLM, we identified an issue in how vLLM allocates GPU memory in multi-model configurations.
+vLLM launches a separate process for each model, with each process responsible for profiling and allocating memory for its own model components, including the KV cache.
+The problem arises because each model profiles memory usage independently and does not have visibility into the memory allocated by other processes.
+Specifically, when the LLM is loaded first, it allocates its KV cache and other resources using PyTorch.
+However, when the PRM is subsequently loaded, its vLLM process does not see the LLM's KV cache as part of the PyTorch-allocated memory footprint.
+Instead, the PRM process treats this as non-torch memory usage during its own profiling step.
+As a result, it significantly underestimates the available GPU memory and allocates a much smaller KV cache than expected.
+This leads to misleading memory diagnostics and reduced KV cache allocation.
+To resolve this, we override the default memory estimation logic by manually setting the \texttt{gpu\_memory\_utilization} parameter for the PRM to 0.95.
+This forces the PRM to treat almost all of the remaining GPU memory as usable for KV cache allocation, ensuring more balanced memory utilisation across both models.
+While this approach does not change vLLM’s underlying profiling mechanism, it allows us to better control and evaluate memory trade-offs between the two models.
 
 \subsection{KV Cache Blocks}
 As part of its PagedAttention mechanism, vLLM breaks down the memory reserved for the KV cache into smaller segments called blocks.
@@ -643,8 +669,6 @@ This determines how much memory is required to store the KV cache entry for one 
 \begin{equation*}
   \text{NumKVBlocks} = \frac{\text{Mem}_{\text{KV}}}{\text{NumTokensPerBlock} \times \text{Mem}_{\text{Token}} \times \text{NumLayers}}
 \end{equation*}
-
-We can see the impact of varying \texttt{gpu\_model\_utilization} on the number of KV blocks available for both the LLM and PRM in %% add figure \ref{figure:num-blocks}
 
 \section{Memory Split}
 \begin{comment}
@@ -686,20 +710,40 @@ As a result, sequences relying on prefix caching no longer benefit from fast loo
 
 This explains the throughput degradation noted earlier and is best illustrated in figures \ref{fig:prm_block_usage_low} and \ref{fig:prm_block_usage_high}.
 When the PRM is allocated less KV cache memory, it holds fewer KV cache blocks and so evictions are necessary to service requests, reducing throughput.
-
-\begin{figure}[htbp]
+\begin{figure}[htpb]
   \centering
-  \includegraphics[width=\textwidth]{figures/prm_block_usage_low.png}
+
+  \subfigure[\texttt{gpu\_model\_utilization} = 0.3]{%
+    \includegraphics[width=0.95\linewidth]{figures/prm_block_usage_low.png}
+    \label{fig:prm_block_usage_low}
+  }
+
+  \vspace{0.8em}  % Optional: adds spacing between the two
+
+  \subfigure[\texttt{gpu\_model\_utilization} = 0.5]{%
+    \includegraphics[width=0.95\linewidth]{figures/prm_block_usage_high.png}
+    \label{fig:prm_block_usage_high}
+  }
+
+  \caption{Number of PRM KV cache blocks allocated at each scheduling step.}
+  \label{fig:prm_block_usage_combined}
+\end{figure}
+
+\begin{comment}
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.95\linewidth]{figures/prm_block_usage_low.png}
   \caption{Number of PRM KV cache blocks allocated at each scheduling step for \texttt{gpu\_model\_utilization}=0.3.}
   \label{fig:prm_block_usage_low}
 \end{figure}
 
-\begin{figure}[htbp]
+\begin{figure}[H]
   \centering
-  \includegraphics[width=\textwidth]{figures/prm_block_usage_high.png}
+  \includegraphics[width=0.95\linewidth]{figures/prm_block_usage_high.png}
   \caption{Number of PRM KV cache blocks allocated at each scheduling step for \texttt{gpu\_model\_utilization}=0.5.}
   \label{fig:prm_block_usage_high}
 \end{figure}
+\end{comment}
 
 \chapter{KV Prefix Caching Strategy}
 \begin{comment}
@@ -747,8 +791,9 @@ This suggests that the access patterns inherent in our joint LLM-PRM search spac
 To further evaluate whether the existing vLLM eviction policy causes performance regressions, we analysed cache thrashing - cases where a prefix block is evicted and later needed again, resulting in a recomputation that could have been avoided. 
 To detect this, we modified vLLM's KV cache manager code (see Algorithm \ref{alg:cachethrashingdetection}) to maintain a global set of seen KV block hashes. 
 
-\begin{algorithm}[H]\label{alg:cachethrashingdetection}
+\begin{algorithm}[H]
 \caption{Detecting Cache Thrashing in vLLM}
+\label{alg:cachethrashingdetection}
 \begin{algorithmic}[1]
 \State \textbf{Global variables:}
 \State \quad \texttt{SeenBlocks} $\gets$ empty hash set
@@ -821,7 +866,7 @@ Conversely, the PRM shows a more evenly distributed mix of token lengths, with m
 With this in mind, we isolate each model to explore how their throughput responds to increasing batch sizes. 
 We vary the \texttt{max\_num\_batched\_tokens} parameter in vLLM, which controls the upper bound of tokens scheduled in a batch. 
 To ensure realistic inputs, we replay prompts and responses from a previous beam search run. 
-These are then fed in bulk to vLLM's generate() API, guaranteeing that the scheduler has ample tokens available to fill batches up to the configured maximum. 
+These are then fed in bulk to vLLM's \texttt{generate()} function, guaranteeing that the scheduler has ample tokens available to fill batches up to the configured maximum. 
 Throughput is then measured in both prompts per second and tokens per second.
 
 \begin{figure}[htbp]
@@ -841,7 +886,7 @@ Throughput is then measured in both prompts per second and tokens per second.
 
 As expected, we observe a sharp increase in throughput (see Figure \ref{fig:prm_throughput_vs_llm_throughput}) for the LLM as batch size increases, confirming that decode efficiency improves with parallelism. 
 In contrast, the PRM's throughput shows early saturation, with limited gains beyond a moderate batch size. 
-This reinforces the idea that aggressively batching LLM decode tokens is a promising path to improved performance. 
+This reinforces the idea that aggressively batching LLM decode tokens is a promising avenue through which performance can be improved. 
 The case strengthens further when we profile batch utilisation in a real workflow and observe that the LLM frequently submits under-filled batches.
 
 \begin{figure}[htbp]
@@ -859,9 +904,12 @@ The case strengthens further when we profile batch utilisation in a real workflo
 \label{fig:batch-utilisation-comparison}
 \end{figure}
 
-Additionally, many LLM decode batches are under-filled - that is, they schedule far fewer tokens than the model could process in a single step. 
+Additionally, many LLM decode batches are under-filled - that is, they schedule far fewer tokens than the model could process in a single step (see Figure \ref{fig:batch-utilisation-comparison}). 
 This underutilisation reflects a tight coupling between the LLM and PRM, where the LLM can only generate tokens once the PRM has fully evaluated and selected nodes. 
 This introduces serial bottlenecks and leaves LLM compute capacity idle.
+The high frequency of single-token decode batches also suggests that variation in reasoning step length may contribute to this effect.
+If different reasoning steps terminate at different lengths, longer steps will require more decode iterations before emitting an end-of-sequence token.
+In such cases, the scheduler may be unable to batch further requests until the longest-running reasoning step completes, limiting batch utilisation and reducing overall throughput.
 
 These observations motivate a decoupled search strategy, where the LLM and PRM operate semi-independently. 
 Rather than waiting for the PRM to determine which nodes to expand next, the LLM can opportunistically generate additional tokens - either for unexplored nodes within the same problem or from unrelated queued requests. 
@@ -888,27 +936,6 @@ Decoupling the LLM from the PRM allows the LLM to independently explore alternat
 This decoupling means that the LLM and PRM no longer operate on the exact same nodes at each step, enabling better batch saturation and throughput, and reducing end-to-end latency - even if it comes at the cost of some wasted computation or cache pressure.
 
 \section{Design}
-\begin{comment}
-With decoupled tree exploration, we aim to take advantage of the dynamics in throughput scaling between the decode-heavy LLM and the prefill-heavy PRM in order to fill a scheduling step in the LLM with more useful work.
-In particular, because decode throughput increases with greater batch size, we increase the batch size of the LLM by packing it with tokens from other requests and, in the event that there are no other requests to process, we speculatively explore other nodes in the search tree.
-Speculative exploration enables us to include potentially useful work in a batch - if the PRM decides that a particular beam is worth exploring, then we may have already expanded this node and so have managed to avoid the overhead incurred by scheduling another kernel execution were we to expand the beams sequentially.
-
-Doing this decouples the search space exploration strategy between the LLM and PRM, with both models processing tokens for different parts of the tree at each generation step.
-This is accomplished by maintaining a queue of work for both the LLM and PRM, with each model popping off work from this queue on invocation (see \ref{alg:treesearchalgorithm}).
-
-We use a \textsc{Beam} data structure to manage the state of a beam during exploration - ensuring we can keep track of any reasoning steps that we have speculatively expanded (see \ref{alg:datastructures}).
-We do this through the use of a \texttt{last\_scored\_thought} attribute that 
-The PRM should only ever score the next thought occuring after the \texttt{last\_scored\_thought} index.
-Scoring any thoughts after this represents potentially needlessly wasted computation by the PRM: since the PRM batch size is smaller than that of the LLM and there is a data dependency from the PRM on the LLM, there always exists useful work to do by the PRM.
-We encapsulate these reasoning steps within a \textsc{Thought} data structure that store the associated PRM score of the step (see \ref{alg:datastructures}).
-
-As a result of the different batch sizes between the PRM and LLM, they each have different policies for selecting what work to include in their input batch. 
-These policies are outlined in \ref{alg:llmtreesearch} and \ref{alg:prmtreesearch}. 
-The LLM prioritises generating reasoning steps for nodes that have been recently scored and deemed to be worthwhile paths to continue exploring, before scheduling work from other waiting problems in order to fill up its input batch.
-It only speculatively explores nodes if it still cannot fill up its input batch.
-The PRM only scores the shallowest nodes in the tree - it never scores a speculatively decoded reasoning step.
-\end{comment}
-
 In decoupled tree exploration, we aim to exploit differences in throughput dynamics between the decode-bound LLM and the prefill-bound PRM. 
 The key idea is to maximise LLM utilisation during each scheduling step by filling its batch with useful work. 
 Since LLM decoding throughput improves with larger batch sizes, we increase the LLM’s batch size by packing it with tokens from multiple requests. 
@@ -918,12 +945,20 @@ This speculative exploration allows the LLM to perform potentially useful comput
 If the PRM later determines that a beam is worth pursuing, we may already have generated its child nodes-thereby avoiding the cost of launching another generation step. 
 This strategy effectively overlaps the LLM’s generation work with the PRM’s slower scoring, improving overall throughput.
 
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{figures/speculative_expansion.png}
+  \caption{With speculative expansion, we generate new reasoning steps before the PRM has scored the existing ones in its queue of work. We do this to increase the batch size of the LLM and improve throughput.}
+  \label{fig:speculativeexpansion}
+\end{figure}
+
 Crucially, this approach decouples the search space traversal performed by the LLM and PRM. 
 Rather than both models operating synchronously on the same node, they each work on different parts of the tree at any given generation step. 
 This is implemented by maintaining separate work queues for the LLM and PRM. Each model consumes work from its respective queue upon invocation (see Algorithm \ref{alg:treesearchalgorithm}).
 
-\begin{algorithm}[H]\label{alg:treesearchalgorithm}
+\begin{algorithm}[H]
 \caption{Decoupled Tree Search Algorithm} 
+\label{alg:treesearchalgorithm}
 \begin{algorithmic}[1]
 \State Initialise list of beams $\mathcal{B} = \{B_1, B_2, \dots, B_n\}$ with associated problems
 \State Initialise empty request queue $\mathcal{Q}_{\text{Req}}$
@@ -956,8 +991,9 @@ Given that the PRM’s batch size is smaller and it depends on LLM outputs, its 
 
 Individual reasoning steps are represented by the \textsc{Thought} data structure, which stores both the LLM-generated text and (optionally) the PRM-assigned score (see Algorithm \ref{alg:datastructures}).
 
-\begin{algorithm}[H]\label{alg:datastructures}
+\begin{algorithm}[H]
 \caption{Beam Search Data Structures}
+\label{alg:datastructures}
 \begin{algorithmic}[1]
 \State \textbf{Structure} \textsc{Thought}:
 \State \hspace{0.5cm} \texttt{text}: String \Comment{The content of the thought}
@@ -982,8 +1018,25 @@ If its batch is not full, it then considers work from other pending problems.
 Only as a last resort does it generate speculative continuations. 
 In contrast, the PRM only scores the shallowest unscored node in each beam, and never scores speculative reasoning steps.
 
-\begin{algorithm}[H]\label{alg:llmtreesearch}
+\begin{algorithm}[H]
+\caption{PRM Tree Exploration Strategy}
+\label{alg:prmtreesearch}
+\begin{algorithmic}[1]
+    \Statex \textbf{Select PRM Batch:}
+    \State Truncate $\mathcal{Q}_{\text{PRM}}$ to $N_{\text{PRM}}$ items
+    \State Query PRM with $\mathcal{Q}_{\text{PRM}}$, get scored thoughts $\mathcal{T}_{\text{PRM}}$ \\
+    \Statex \textbf{Process PRM Results:}
+    \For{each scored tuple $(B, t, s) \in \mathcal{T}_{\text{PRM}}$}
+        \State Set $t.\text{score} \gets s$
+        \State Increment $B.\text{last\_scored\_thought}$
+        \State Remove $(B, t)$ from $\mathcal{Q}_{\text{PRM}}$
+    \EndFor
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[H]
 \caption{LLM Tree Exploration Strategy}
+\label{alg:llmtreesearch}
 \begin{algorithmic}[1]
 \Statex \textbf{Select LLM Prompts:}
 \State $\mathcal{Q}_{\text{LLM}} \gets [\,]$
@@ -1023,23 +1076,9 @@ In contrast, the PRM only scores the shallowest unscored node in each beam, and 
 \end{algorithmic}
 \end{algorithm}
 
-\begin{algorithm}[H]\label{alg:prmtreesearch}
-\caption{PRM Tree Exploration Strategy}
-\begin{algorithmic}[1]
-    \Statex \textbf{Select PRM Batch:}
-    \State Truncate $\mathcal{Q}_{\text{PRM}}$ to $N_{\text{PRM}}$ items
-    \State Query PRM with $\mathcal{Q}_{\text{PRM}}$, get scored thoughts $\mathcal{T}_{\text{PRM}}$ \\
-    \Statex \textbf{Process PRM Results:}
-    \For{each scored tuple $(B, t, s) \in \mathcal{T}_{\text{PRM}}$}
-        \State Set $t.\text{score} \gets s$
-        \State Increment $B.\text{last\_scored\_thought}$
-        \State Remove $(B, t)$ from $\mathcal{Q}_{\text{PRM}}$
-    \EndFor
-\end{algorithmic}
-\end{algorithm}
-
 \chapter{Evaluation}
 \begin{comment}
+
   - bit at the start
     - we evaluate our decoupled tree exploration strategy with respect to our baseline metrics and aim to establish an estimate of how much it could improve throughput
   - potential performance improvement 
@@ -1105,9 +1144,15 @@ However, as we discuss below, these gains are constrained by batch composition, 
 
 Packing unrelated requests into the same batch improves LLM utilisation, but it also changes batch characteristics. 
 Decode-only batches are fast and memory-efficient while introducing new prompts requires prefill, which is slower and more memory intensive. 
-We expect increased inter-token latency and degraded throughput in hybrid batches \ref{agrawal2024taming}. 
+We expect increased inter-token latency and degraded throughput in hybrid batches (see Figure \ref{fig:batch_type_latency}) \cite{agrawal2024taming}. 
 
 % plot goes here showing latency between decode only and hybrid batches
+\begin{figure}[htbp]
+\centering
+\includegraphics[]{figures/llm_mean_latency_by_batch_type.pdf}
+\caption{Batches containing a mixture of prefill and decode requests typically exhibit higher latency, potentially increasing inter-token latency in the case of eagerly scheduling new work for the LLM.}
+\label{fig:batch_type_latency}
+\end{figure}
 
 \begin{comment}
 A future experiment could compare LLM latency across:
